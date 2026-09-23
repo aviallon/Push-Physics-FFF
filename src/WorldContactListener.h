@@ -38,30 +38,38 @@ namespace pa
 			std::uint64_t actorActor = 0;      // actor <-> actor (neither is the player)
 			std::uint64_t other = 0;           // anything with a null userData
 
-			// Phantom-collidable control. NOTE THE ASYMMETRY: hkpCollisionEvent::bodies
-			// is typed hkpRigidBody*[2] and a phantom is not a rigid body, so this
-			// being NON-ZERO would prove that character phantoms do reach this channel,
-			// while ZERO proves nothing at all (the channel may be rigid-body-only by
-			// construction). It is kept because a single non-zero is decisive, never as
-			// the basis for reading a zero.
+			// Phantom-collidable control, with the asymmetry that makes it safe to
+			// read: hkpCollisionEvent::bodies is typed hkpRigidBody*[2] and a phantom is
+			// not a rigid body, so ZERO proves nothing at all (the channel may be
+			// rigid-body-only by construction). A non-zero is only SUGGESTIVE, not proof:
+			// it says a body's collidable matched a REGISTERED phantom's collidable,
+			// which requires a live (non-stale) registry entry, and it assumes the
+			// engine is willing to route a non-rigid-body through a hkpRigidBody* slot.
 			std::uint64_t bodyPhantom = 0;
 			std::uint64_t bodyPhantomPlayer = 0;
 			// Player identity by collision group (CFilter bits 16-31). Vacuous when
 			// the phantom's group is 0, which is warned about once.
 			std::uint64_t pcGroup = 0;
 			// Superset tag, explicitly NOT a player signal: "exactly one side
-			// unidentified, the other side an actor" also fires for every NPC-vs-world
-			// pair. Kept only to show that bucket is large.
+			// unidentified, the other side an actor" fires for every NPC-vs-world pair,
+			// and also for player-vs-null, since the player IS an Actor. Kept only so
+			// the log shows how large that bucket is.
 			std::uint64_t nullVsActor = 0;
-			std::uint64_t logged = 0;  // bounded diagnostic lines emitted
+			// Contact-point diagnostic lines only: the collision-added and bump-record
+			// lines have their own separate caps, so this does NOT total the log volume.
+			std::uint64_t logged = 0;
 		};
 
 		[[nodiscard]] Stats Snapshot() const;
 
 	private:
-		// Shared budget for the bounded diagnostics, so the two callbacks cannot
-		// double the log volume.
-		[[nodiscard]] bool TryClaimLogSlot();
+		// Separate budgets per diagnostic stream. A single shared budget let the
+		// far-more-frequent contact-point callback take the window first and starve
+		// the collision-added line to zero - the failure mode this probe exists to
+		// avoid. Non-atomic check-then-act across callback threads can still
+		// overshoot kMaxLogs by a line or two; that is bounded and acceptable.
+		[[nodiscard]] static bool TryClaimLogSlot(std::atomic<std::uint64_t>& a_logged,
+			std::atomic<std::uint64_t>& a_lastMs);
 
 		std::atomic<std::uint64_t> collisionAdded_{ 0 };
 		std::atomic<std::uint64_t> pcActor_{ 0 };
@@ -72,8 +80,10 @@ namespace pa
 		std::atomic<std::uint64_t> bodyPhantomPlayer_{ 0 };
 		std::atomic<std::uint64_t> pcGroup_{ 0 };
 		std::atomic<std::uint64_t> nullVsActor_{ 0 };
-		std::atomic<std::uint64_t> logged_{ 0 };
+		std::atomic<std::uint64_t> logged_{ 0 };           // contact-point lines
 		std::atomic<std::uint64_t> lastLogMs_{ 0 };
+		std::atomic<std::uint64_t> collisionLogged_{ 0 };  // collision-added lines
+		std::atomic<std::uint64_t> collisionLastMs_{ 0 };
 	};
 
 	[[nodiscard]] WorldContactListener& GetWorldContactListener();
@@ -94,10 +104,14 @@ namespace pa
 	void EnsurePlayerBodyIdentity();
 
 	// Main thread. Reads the engine's OWN record of the last bump
-	// (bhkCharacterController::bumpedBody / bumpedCharCollisionObject, plain fields
-	// at +0x2C0/+0x2C8) and logs it when it changes. No hook, no vtable call: this
-	// is the channel the character solver itself populates, and
-	// bumpedCharCollisionObject is specifically the character collision object the
-	// controller bumped.
+	// (bhkCharacterController::bumpedBody / bumpedCharCollisionObject) and logs it
+	// when that pair changes, capped at kBumpLogMax lines.
+	//
+	// SEMANTICS ARE UNVERIFIED. Those fields appear in research/ as an offset list
+	// only; nothing establishes that they are populated when the PLAYER bumps an
+	// NPC (they may be for object or ragdoll bumps instead). This measures "are
+	// these fields non-null on the player controller, and what do they resolve to";
+	// only a live run can say what that means. Do NOT read its output as "the
+	// player bumped an NPC".
 	void ProbePlayerBumpRecord();
 }

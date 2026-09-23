@@ -2,6 +2,7 @@
 
 #include "WorldContactListener.h"
 
+#include "Config.h"
 #include "FrameClock.h"
 #include "HkMath.h"
 #include "Hooks/HavokUtil.h"
@@ -35,10 +36,18 @@ namespace pa
 		// EnsurePlayerBodyIdentity(). Identity by group survives a null userData,
 		// which identity by refr does not. 0 means "not recorded", and a zero group
 		// is warned about once because it makes the group probe vacuous.
-		std::atomic<std::uint32_t> g_playerGroup{ 0 };
-		std::atomic<bool>          g_groupWarned{ false };
+		std::atomic<std::uint32_t>  g_playerGroup{ 0 };
+		std::atomic<bool>           g_groupWarned{ false };
 		std::atomic<std::uintptr_t> g_lastIdentityLog{ 0 };
-		std::atomic<std::uintptr_t> g_lastBumpPair{ 0 };
+		// Two atomics rather than one hash: a hashed pair could collide with the
+		// initialised "nothing yet" value and silently swallow that bump forever.
+		std::atomic<std::uintptr_t> g_lastBumpBody{ 0 };
+		std::atomic<std::uintptr_t> g_lastBumpChar{ 0 };
+		// The bump probe has its own cap and no window: it runs on the main thread
+		// and is edge-triggered, so it cannot flood, but it also must not be
+		// unbounded (alternating bumper pairs would otherwise log every tick).
+		std::atomic<std::uint64_t> g_bumpLines{ 0 };
+		constexpr std::uint64_t    kBumpLogMax = 20;
 
 		constexpr std::uint64_t kLogWindowMs = 5000;
 		constexpr std::uint64_t kMaxLogs = 20;
@@ -139,11 +148,16 @@ namespace pa
 
 		bool phantomHit = false;
 		bool phantomPlayer = false;
-		for (std::size_t i = 0; i < 2; ++i) {
-			bool isPlayer = false;
-			if (BodyIsRegisteredPhantom(a_event.bodies[i], isPlayer)) {
-				phantomHit = true;
-				phantomPlayer = phantomPlayer || isPlayer;
+		// The registry scans are O(capacity) and run for EVERY new collision pair in
+		// the world, on the physics thread, so they are gated on debugLog: with the
+		// probe off this costs one predictable branch.
+		if (Config::Get().debugLog) {
+			for (std::size_t i = 0; i < 2; ++i) {
+				bool isPlayer = false;
+				if (BodyIsRegisteredPhantom(a_event.bodies[i], isPlayer)) {
+					phantomHit = true;
+					phantomPlayer = phantomPlayer || isPlayer;
+				}
 			}
 		}
 		if (phantomHit) {
@@ -172,9 +186,9 @@ namespace pa
 			other_.fetch_add(1, std::memory_order_relaxed);
 		}
 
-		// Superset tag only, NOT a player signal: every NPC-vs-world pair lands here
-		// too (the swallowing bucket is `other_`). It is recorded so the log shows how
-		// large that bucket is, never to conclude anything about the player.
+		// Superset tag only, NOT a player signal: it also fires for every NPC-vs-world
+		// pair, and for player-vs-null since the player is itself an Actor. Recorded
+		// so the log shows how large that bucket is, never to conclude anything.
 		auto*      identified = refrA ? refrA : refrB;
 		const bool oneNull = (refrA == nullptr) != (refrB == nullptr);
 		const bool nullVsActor = oneNull && identified && identified->As<RE::Actor>();
@@ -182,32 +196,36 @@ namespace pa
 			nullVsActor_.fetch_add(1, std::memory_order_relaxed);
 		}
 
-		if ((groupHit || phantomHit || nullVsActor) && TryClaimLogSlot()) {
+		// Form IDs only, never names: this runs on the physics thread, and
+		// GetDisplayFullName() is an engine call that walks the game world. Names are
+		// printed by ProbePlayerBumpRecord() on the main thread instead.
+		if ((groupHit || phantomHit || nullVsActor) &&
+			TryClaimLogSlot(collisionLogged_, collisionLastMs_)) {
 			logger::info("world contact event: groupHit={} phantomHit={} phantomPlayer={} nullVsActor={} "
-						 "filterA=0x{:08X} refrA=0x{:08X} '{}' filterB=0x{:08X} refrB=0x{:08X} '{}' "
-						 "playerGroup=0x{:04X}",
+						 "filterA=0x{:08X} refrA=0x{:08X} filterB=0x{:08X} refrB=0x{:08X} playerGroup=0x{:04X}",
 				groupHit, phantomHit, phantomPlayer, nullVsActor,
-				filterA, refrA ? refrA->GetFormID() : 0u, SafeName(refrA),
-				filterB, refrB ? refrB->GetFormID() : 0u, SafeName(refrB),
+				filterA, refrA ? refrA->GetFormID() : 0u,
+				filterB, refrB ? refrB->GetFormID() : 0u,
 				static_cast<std::uint16_t>(playerGroup));
 		}
 	}
 
-	bool WorldContactListener::TryClaimLogSlot()
+	bool WorldContactListener::TryClaimLogSlot(std::atomic<std::uint64_t>& a_logged,
+		std::atomic<std::uint64_t>& a_lastMs)
 	{
-		// Bounded: at most kMaxLogs lines, one per kLogWindowMs. Everything above
-		// the gate is a couple of atomic loads, so the hot path costs nothing once
-		// the cap is reached. Shared by both callbacks, so the cap is global.
-		if (logged_.load(std::memory_order_relaxed) >= kMaxLogs) {
+		// Bounded: at most kMaxLogs lines per stream, one per kLogWindowMs. Everything
+		// above the gate is a couple of atomic loads, so the hot path costs nothing
+		// once the cap is reached.
+		if (a_logged.load(std::memory_order_relaxed) >= kMaxLogs) {
 			return false;
 		}
 		const auto now = FrameClock::NowMs();
-		const auto last = lastLogMs_.load(std::memory_order_relaxed);
+		const auto last = a_lastMs.load(std::memory_order_relaxed);
 		if (last != 0 && now - last < kLogWindowMs) {
 			return false;
 		}
-		lastLogMs_.store(now, std::memory_order_relaxed);
-		logged_.fetch_add(1, std::memory_order_relaxed);
+		a_lastMs.store(now, std::memory_order_relaxed);
+		a_logged.fetch_add(1, std::memory_order_relaxed);
 		return true;
 	}
 
@@ -228,16 +246,18 @@ namespace pa
 		if (!otherRefr || !otherRefr->As<RE::Actor>()) {
 			return;
 		}
-		if (!TryClaimLogSlot()) {
+		if (!TryClaimLogSlot(logged_, lastLogMs_)) {
 			return;
 		}
-
-		lastLogMs_.store(FrameClock::NowMs(), std::memory_order_relaxed);
 
 		const auto*     cp = a_event.contactPoint;
 		const math::Vec3 pos = cp ? ToVec3(cp->position) : math::Vec3{};
 		const math::Vec3 nrm = cp ? ToVec3(cp->separatingNormal) : math::Vec3{};
 
+		// Bounded exception to "physics-thread code touches no game world": two
+		// GetDisplayFullName() calls behind a budget capped at kMaxLogs lines per
+		// session, because "which actor" is the entire point of this one line. Every
+		// other diagnostic on this thread prints form IDs only.
 		logger::info("world contact: player<->actor player=0x{:08X} '{}' actor=0x{:08X} '{}' "
 					 "point=({:.1f},{:.1f},{:.1f}) normal=({:.2f},{:.2f},{:.2f}) logged={}/{}",
 			playerRefr->GetFormID(), SafeName(playerRefr),
@@ -301,9 +321,10 @@ namespace pa
 		// identity has to come from the registry instead.
 		auto* mapped = RE::TESHavokUtilities::FindCollidableRef(*collidable);
 		logger::info("player body identity: collidable=0x{:X} filterInfo=0x{:08X} group=0x{:04X} layer={} "
-					 "engineMapResolves={} (engineMapRef=0x{:X})",
+					 "groupProbeViable={} engineMapResolves={} (engineMapRef=0x{:X})",
 			reinterpret_cast<std::uintptr_t>(collidable), filter.filter, group,
 			static_cast<std::int32_t>(collidable->GetCollisionLayer()),
+			group != 0,
 			mapped != nullptr,
 			reinterpret_cast<std::uintptr_t>(mapped));
 	}
@@ -318,26 +339,42 @@ namespace pa
 		auto* body = ctrl->bumpedBody.get();
 		auto* charBody = ctrl->bumpedCharCollisionObject.get();
 
-		// The engine leaves the last bump in place, so this is edge-triggered on the
-		// pair of pointers: a level-triggered log would either repeat one bump
-		// forever or miss the bump entirely.
-		const auto pair = reinterpret_cast<std::uintptr_t>(body) ^
-			(reinterpret_cast<std::uintptr_t>(charBody) * 0x9E3779B97F4A7C15ull);
-		if (g_lastBumpPair.load(std::memory_order_relaxed) == pair) {
+		// Edge-triggered on the pair of pointers AND capped: the engine leaves the
+		// last bump in place, so a level-triggered log would repeat one bump forever,
+		// while alternating bumper pairs would log every tick without the cap. Two
+		// separate atomics rather than one hash, so a hash collision cannot be
+		// mistaken for the "nothing yet" state. This is a 60 Hz sample of fields the
+		// physics thread writes, so a bump set and cleared within one step is missed;
+		// that is inherent to sampling and not a correctness claim.
+		const auto bodyKey = reinterpret_cast<std::uintptr_t>(body);
+		const auto charKey = reinterpret_cast<std::uintptr_t>(charBody);
+		if (g_lastBumpBody.load(std::memory_order_relaxed) == bodyKey &&
+			g_lastBumpChar.load(std::memory_order_relaxed) == charKey) {
 			return;
 		}
-		g_lastBumpPair.store(pair, std::memory_order_relaxed);
+		g_lastBumpBody.store(bodyKey, std::memory_order_relaxed);
+		g_lastBumpChar.store(charKey, std::memory_order_relaxed);
 		if (!body && !charBody) {
 			return;  // cleared: not a bump
 		}
+		if (g_bumpLines.load(std::memory_order_relaxed) >= kBumpLogMax) {
+			return;
+		}
+		g_bumpLines.fetch_add(1, std::memory_order_relaxed);
 
+		// These two dereferences race the physics thread's writes to non-atomic
+		// hkRefPtr fields. Reading .get() is refcount-safe, and the hkRefPtr holds a
+		// strong reference so the body is not freed by refcount while held - but a
+		// simultaneous release could still drop the last reference. This is an
+		// accepted, narrow assumption, not a proof: names are printed here (main
+		// thread) rather than in the callback for exactly that reason.
 		auto* bodyRefr = body ? body->GetUserData() : nullptr;
 		auto* charRefr = charBody ? charBody->GetUserData() : nullptr;
 		logger::info("player bump record: bumpedBody=0x{:X} (refr=0x{:08X} '{}') "
-					 "bumpedCharCollisionObject=0x{:X} (refr=0x{:08X} '{}') bumpedForce={:.2f} supportBody=0x{:X}",
+					 "bumpedCharCollisionObject=0x{:X} (refr=0x{:08X} '{}') bumpedForce={:.2f}",
 			reinterpret_cast<std::uintptr_t>(body), bodyRefr ? bodyRefr->GetFormID() : 0u, SafeName(bodyRefr),
 			reinterpret_cast<std::uintptr_t>(charBody), charRefr ? charRefr->GetFormID() : 0u, SafeName(charRefr),
-			ctrl->bumpedForce, reinterpret_cast<std::uintptr_t>(ctrl->supportBody.get()));
+			ctrl->bumpedForce);
 	}
 
 
@@ -412,6 +449,10 @@ namespace pa
 		// generation instead of the answer being frozen from before the load.
 		g_playerGroup.store(0, std::memory_order_relaxed);
 		g_lastIdentityLog.store(0, std::memory_order_relaxed);
-		g_lastBumpPair.store(0, std::memory_order_relaxed);
+		g_lastBumpBody.store(0, std::memory_order_relaxed);
+		g_lastBumpChar.store(0, std::memory_order_relaxed);
+		// Re-arm the zero-group warning too: a transient zero observed mid-load must
+		// not consume the one warning that matters for the new generation.
+		g_groupWarned.store(false, std::memory_order_relaxed);
 	}
 }
