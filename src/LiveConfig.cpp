@@ -153,7 +153,10 @@ namespace pa::LiveConfig
 
 		[[nodiscard]] bool ParseUInt(std::string_view a_text, std::uint32_t& a_out)
 		{
-			if (a_text.empty()) {
+			// strtoul accepts a leading '-' and wraps it; on Windows `unsigned long` is
+			// 32-bit, so "-1" would become 0xFFFFFFFF and pass the range check below.
+			// Require a digit first so the result is platform-independent.
+			if (a_text.empty() || a_text.front() < '0' || a_text.front() > '9') {
 				return false;
 			}
 			std::string text(a_text);

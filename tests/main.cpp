@@ -434,6 +434,7 @@ int main()
 		const auto every = pa::ParseCommandLine("trace every 5");
 		Check(every.traceAction == TraceAction::kEvery && every.every == 5, "trace every <n> parses");
 		Check(!pa::ParseCommandLine("trace every 0").valid, "trace every 0 is rejected");
+		Check(!pa::ParseCommandLine("trace every -1").valid, "trace every -1 is rejected");
 		Check(!pa::ParseCommandLine("trace every").valid, "trace every without n is rejected");
 		Check(!pa::ParseCommandLine("trace sideways").valid, "trace with a bad action is rejected");
 
@@ -468,6 +469,7 @@ int main()
 		Check(pa::ParseFormId("010", id) && id == 10, "ParseFormId does not read a leading zero as octal");
 		Check(!pa::ParseFormId("0x", id), "ParseFormId rejects a bare 0x");
 		Check(!pa::ParseFormId("", id), "ParseFormId rejects an empty string");
+		Check(!pa::ParseFormId("-1", id), "ParseFormId rejects a sign (unsigned literal)");
 
 		Check(std::strcmp(pa::PushModeName(pa::PushMode::kCtrl), "ctrl") == 0, "PushModeName ctrl");
 		Check(std::strcmp(pa::PushModeName(pa::PushMode::kRb), "rb") == 0, "PushModeName rb");
