@@ -32,9 +32,16 @@ namespace pa
 			const RE::hkpCharacterObjectInteractionEvent* a_input,
 			RE::hkpCharacterObjectInteractionResult* a_output);
 
-		// Fallback detection (design.md 3.7), driven by the slot-1 override.
+		// Primary Path-1 detection (design.md 3.7), driven by the slot-1 override:
+		// a scan of the manifold inside ProcessConstraintsCallback. Cheap and
+		// allocation-free; distinct targets feed the same per-target path.
 		static void ScanManifold(RE::hkpCharacterProxy* a_self,
 			const RE::hkArray<RE::hkpRootCdPoint>& a_manifold);
+
+		// Distinct target proxies the manifold scan has detected this session.
+		// CharacterInteractionCallback never fires on the player's proxy (in-game
+		// evidence, 2026-09), so this is the counter that proves Path 1 detection.
+		[[nodiscard]] static std::uint64_t PairCount();
 
 		// Approach A, applied to the player's proxy on load / config change.
 		static void ApplyProxyTuning(RE::hkpCharacterProxy* a_playerProxy);

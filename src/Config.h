@@ -25,10 +25,15 @@ namespace pa
 		bool useCharacterInteraction = true;
 		// [Listener] Path 2: our listener's ObjectInteractionCallback.
 		bool useObjectInteraction = true;
-		// [Listener] Fallback manifold scan inside ProcessConstraintsCallback. Off
-		// by default: its leading-proxy ABI is an unverified NG reconstruction and
-		// it is only enabled after the invariant self-check passes on live data.
-		bool useManifoldScan = false;
+		// [Listener] Primary Path-1 detection: the manifold scan inside
+		// ProcessConstraintsCallback. CharacterInteractionCallback does not fire on
+		// the player's proxy (in-game evidence, 2026-09), so this scan is the
+		// default and primary detection path. The leading-proxy ABI is still an
+		// unverified NG reconstruction, but the invariant self-check (gate 4)
+		// validates it on live data and disables the scan + marks health DEGRADED
+		// if the ABI is wrong. The CharacterInteractionCallback slot-4 override is
+		// kept compiled and counted (character=) but no longer depended on.
+		bool useManifoldScan = true;
 		// [Listener] MinHook escalations (design.md 3.8). 0 = no detour at all.
 		bool useEscalationHooks = false;
 		// [Listener] E1 target-side pre-solve injection.
@@ -53,8 +58,13 @@ namespace pa
 		// P = 6 (~30k) and L252/skill1.00 -> P ~ 26.65 (~133k).
 		// characterStrength = base * P * (raceBaseMass / referenceMass), clamped to
 		// [fStrengthMin, fStrengthMax].
+		//
+		// TESRace::data.baseMass is a RELATIVE multiplier, ~1.0 for every humanoid
+		// race, not kilograms. fStrengthReferenceMass is therefore 1.0 (the humanoid
+		// reference), so the anchors above hold for a normal race and a race with
+		// baseMass > 1 (giant, dragon) scales strength UP proportionally.
 		float strengthBase = 5000.0f;
-		float strengthReferenceMass = 80.0f;
+		float strengthReferenceMass = 1.0f;
 		float strengthLevelGain = 0.05f;
 		float strengthSkillGain = 1.371f;
 		float strengthMin = 500.0f;

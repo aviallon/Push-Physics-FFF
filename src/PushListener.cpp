@@ -20,6 +20,9 @@ namespace pa
 		// an unverified NG reconstruction (U3). Prove the ABI on live data before
 		// trusting a byte of the manifold; N consecutive violations turn the scan
 		// off for good and mark the plugin DEGRADED.
+		//
+		// Callback-confined: only ProcessConstraintsCallback (one Havok thread)
+		// touches these fields, so no synchronisation is needed.
 		class Invariant
 		{
 		public:
@@ -80,13 +83,14 @@ namespace pa
 		// One-shot, non-gating: keep the retired inversion's mismatch visible.
 		LogRetiredInversionOnce(a_proxy);
 
-		if (owner_ == a_proxy) {
+		if (owner_.load(std::memory_order_acquire) == a_proxy) {
 			return true;
 		}
 
 		// Record ownership BEFORE appending, so a callback racing the append is
-		// still recognised as ours.
-		owner_ = a_proxy;
+		// still recognised as ours. Release pairs with the acquire loads in the
+		// callbacks.
+		owner_.store(a_proxy, std::memory_order_release);
 
 		auto& listeners = a_proxy->listeners;
 		for (std::int32_t i = 0; i < listeners.size(); ++i) {
@@ -102,7 +106,7 @@ namespace pa
 
 	void PushListener::Detach()
 	{
-		owner_ = nullptr;
+		owner_.store(nullptr, std::memory_order_release);
 	}
 
 	void PushListener::ProcessConstraintsCallback(const RE::hkpCharacterProxy* a_proxy,
@@ -110,7 +114,7 @@ namespace pa
 		RE::hkpSimplexSolverInput& a_input)
 	{
 		constraintCalls_.fetch_add(1, std::memory_order_relaxed);
-		if (!owner_) {
+		if (!owner_.load(std::memory_order_acquire)) {
 			return;  // not attached yet: nothing we can vouch for
 		}
 
@@ -119,7 +123,7 @@ namespace pa
 			return;
 		}
 
-		const bool plausible = a_proxy == owner_ &&
+		const bool plausible = a_proxy == owner_.load(std::memory_order_acquire) &&
 			std::isfinite(a_input.deltaTime) && a_input.deltaTime > 0.0f && a_input.deltaTime <= 0.2f;
 		if (!invariant.Ok(plausible)) {
 			return;  // never dereference what we cannot vouch for
@@ -142,7 +146,7 @@ namespace pa
 
 	void PushListener::CharacterInteractionCallback(RE::hkpCharacterProxy* a_proxy, RE::hkpCharacterProxy* a_otherProxy, const RE::hkContactPoint& a_contact)
 	{
-		if (a_proxy != owner_) {
+		if (a_proxy != owner_.load(std::memory_order_acquire)) {
 			g_orphanCalls.fetch_add(1, std::memory_order_relaxed);
 			return;  // gate 2: this listener is on a proxy that is no longer the player's
 		}
@@ -158,7 +162,7 @@ namespace pa
 
 	void PushListener::ObjectInteractionCallback(RE::hkpCharacterProxy* a_proxy, const RE::hkpCharacterObjectInteractionEvent& a_input, RE::hkpCharacterObjectInteractionResult& a_output)
 	{
-		if (a_proxy != owner_) {
+		if (a_proxy != owner_.load(std::memory_order_acquire)) {
 			g_orphanCalls.fetch_add(1, std::memory_order_relaxed);
 			return;
 		}

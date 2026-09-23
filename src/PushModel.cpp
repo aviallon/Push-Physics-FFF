@@ -119,6 +119,34 @@ namespace pa
 			// Table full: stop noting (bounded), never per frame.
 		}
 
+		// Distinct (player, target) pairs detected by the manifold scan. A bounded
+		// atomic identity set: inserted exactly once per target proxy, so the count
+		// is "how many different characters we have physically contacted", not
+		// "how many manifold points". Once full the count stops growing (no
+		// eviction) rather than misreporting. Written from the physics callback.
+		constexpr std::size_t              kPairSlots = 128;
+		std::atomic<RE::hkpCharacterProxy*> g_pairsSeen[kPairSlots]{};
+		std::atomic<std::uint64_t>          g_pairCount{ 0 };
+
+		// Returns true when a_other is newly seen. Does not log (the caller has the
+		// resolved registry entry).
+		[[nodiscard]] bool NotePairSeen(RE::hkpCharacterProxy* a_other)
+		{
+			for (const auto& slot : g_pairsSeen) {
+				if (slot.load(std::memory_order_relaxed) == a_other) {
+					return false;
+				}
+			}
+			for (auto& slot : g_pairsSeen) {
+				RE::hkpCharacterProxy* expected = nullptr;
+				if (slot.compare_exchange_strong(expected, a_other, std::memory_order_relaxed)) {
+					g_pairCount.fetch_add(1, std::memory_order_relaxed);
+					return true;
+				}
+			}
+			return false;  // table full: stop counting, never evict
+		}
+
 		// Fill the pure derivation inputs from the live player. Race mass is an
 		// inline TESRace::data field and the five skills go through the
 		// ActorValueOwner virtual, so neither path can be an unresolved
@@ -386,19 +414,68 @@ namespace pa
 		}
 	}
 
+	std::uint64_t PushModel::PairCount()
+	{
+		return g_pairCount.load(std::memory_order_relaxed);
+	}
+
 	void PushModel::ScanManifold(RE::hkpCharacterProxy* a_self,
 		const RE::hkArray<RE::hkpRootCdPoint>& a_manifold)
 	{
 		if (!a_self) {
 			return;
 		}
+
+		// Dedupe within one manifold pass: several contact points can name the same
+		// target, and the per-target path only needs one. Fixed stack storage, so
+		// this is allocation-free on the physics thread. If the array fills we fall
+		// back to the per-target cooldown/once-per-frame guard, which is correct
+		// either way.
+		constexpr std::size_t  kScanDedupe = 32;
+		RE::hkpCharacterProxy* seen[kScanDedupe]{};
+		std::size_t            seenCount = 0;
+
+		auto& proxies = ProxyRegistry::Get();
+
+		const auto handle = [&](RE::hkpCharacterProxy* a_other, const RE::hkpRootCdPoint& a_point) {
+			if (!a_other || a_other == a_self) {
+				return;
+			}
+			for (std::size_t i = 0; i < seenCount; ++i) {
+				if (seen[i] == a_other) {
+					return;
+				}
+			}
+			if (seenCount < kScanDedupe) {
+				seen[seenCount++] = a_other;
+			}
+
+			// One bounded, rate-limited line the first time a target proxy is seen:
+			// this is the evidence that the scan resolves Lydia, plus her mass and
+			// whether the registry knew her.
+			if (NotePairSeen(a_other)) {
+				ProxyEntry     info{};
+				const bool     known = proxies.Lookup(a_other, info);
+				const auto&    cfg = Config::Get();
+				if (cfg.debugLog && DebugLineAllowed()) {
+					logger::info("manifold scan: new target proxy 0x{:X} known={} mass={:.1f} actor=0x{:X} pairs={}",
+						reinterpret_cast<std::uintptr_t>(a_other), known, info.mass,
+						reinterpret_cast<std::uintptr_t>(info.actor), PairCount());
+				}
+			}
+
+			OnCharacterContact(a_self, a_other, &a_point.contact);
+		};
+
 		for (std::int32_t i = 0; i < a_manifold.size(); ++i) {
 			const auto& point = a_manifold[i];
 			RE::hkpCharacterProxy* other = nullptr;
-			if (ProxyRegistry::Get().ProxyForCollidable(point.rootCollidableB, other) && other != a_self) {
-				OnCharacterContact(a_self, other, &point.contact);
-			} else if (ProxyRegistry::Get().ProxyForCollidable(point.rootCollidableA, other) && other != a_self) {
-				OnCharacterContact(a_self, other, &point.contact);
+			// If B resolves to the player's own proxy, fall through to A: the
+			// manifold is symmetric and the target may be on either side.
+			if (proxies.ProxyForCollidable(point.rootCollidableB, other) && other != a_self) {
+				handle(other, point);
+			} else if (proxies.ProxyForCollidable(point.rootCollidableA, other) && other != a_self) {
+				handle(other, point);
 			}
 		}
 	}

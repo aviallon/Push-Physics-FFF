@@ -282,11 +282,12 @@ int main()
 	// --- character-strength derivation (Approach A) ---------------------------
 	{
 		using namespace pa::math;
-		StrengthInputs in;  // defaults: base 5000, refMass 80, level 1, no skills
+		StrengthInputs in;  // defaults: base 5000, raceBaseMass 1.0, refMass 1.0, level 1, no skills
 
 		// The three fitted anchors: L1/skill0.15 -> 5000, L50/skill0.80 -> 30000,
-		// L252/skill1.00 -> ~133000 (race mass 80 = reference mass). Each skill set
-		// to the same value makes the weighted physical-skill mean that value.
+		// L252/skill1.00 -> ~133000 (humanoid raceBaseMass = referenceMass = 1.0).
+		// Each skill set to the same value makes the weighted physical-skill mean
+		// that value.
 		const auto at = [](float a_level, float a_skill) {
 			StrengthInputs s;
 			s.level = a_level;
@@ -301,12 +302,23 @@ int main()
 		Check(std::fabs(at(50.0f, 80.0f) - 30000.0f) / 30000.0f < 0.01f, "anchor L50/skill0.80 -> 30000 (within 1%)");
 		Check(std::fabs(at(252.0f, 100.0f) - 133000.0f) / 133000.0f < 0.01f, "anchor L252/skill1.00 -> ~133000 (within 1%)");
 
-		// Race scaling is linear in raceBaseMass / referenceMass.
+		// In-game regression (2026-09): a humanoid race has baseMass = 1.0, so with
+		// the old fStrengthReferenceMass = 80 the factor was 1/80 and the observed
+		// L7/P~1.418 derivation clamped to the 500 floor. With referenceMass = 1.0
+		// the same inputs yield ~7090.
+		StrengthInputs l7;
+		l7.level = 7.0f;
+		l7.oneHanded = l7.twoHanded = l7.block = l7.heavyArmor = l7.archery = 23.0f;
+		Check(std::fabs(DeriveCharacterStrength(l7) - 7090.0f) / 7090.0f < 0.02f,
+			"regression: humanoid race baseMass 1.0 at L7 derives ~7090, not the 500 floor");
+
+		// Race scaling is linear in raceBaseMass / referenceMass. baseMass is the
+		// engine's RELATIVE race multiplier, so 2.0 is a giant-scale race.
 		StrengthInputs race1 = in;
 		race1.oneHanded = race1.twoHanded = race1.block = race1.heavyArmor = race1.archery = 80.0f;
 		race1.level = 50.0f;
 		StrengthInputs race2 = race1;
-		race2.raceBaseMass = 160.0f;
+		race2.raceBaseMass = 2.0f;
 		Check(std::fabs(DeriveCharacterStrength(race2) - 2.0f * DeriveCharacterStrength(race1)) < 1e-2f,
 			"race base mass scales strength linearly");
 

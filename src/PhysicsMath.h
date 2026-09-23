@@ -167,8 +167,11 @@ namespace pa::math
 	// All inputs are plain floats so the derivation is unit-tested off-game.
 	struct StrengthInputs
 	{
-		float raceBaseMass = 80.0f;       // TESRace::data.baseMass (inline field)
-		float referenceMass = 80.0f;      // fStrengthReferenceMass
+		// TESRace::data.baseMass is a RELATIVE multiplier (~1.0 for every humanoid
+		// race), NOT kilograms; referenceMass is 1.0 so a humanoid race leaves the
+		// base strength unchanged and a race with baseMass > 1 scales it up.
+		float raceBaseMass = 1.0f;        // TESRace::data.baseMass (inline field)
+		float referenceMass = 1.0f;       // fStrengthReferenceMass
 		float level = 1.0f;               // Actor level, >= 1
 		float oneHanded = 0.0f;           // raw actor values, 0..100 (may exceed)
 		float twoHanded = 0.0f;
@@ -204,7 +207,9 @@ namespace pa::math
 	[[nodiscard]] float StrengthPower(const StrengthInputs& a_in);
 
 	// characterStrength = base * P * (raceBaseMass / referenceMass), clamped to
-	// [minStrength, maxStrength].
+	// [minStrength, maxStrength]. raceBaseMass is the engine's RELATIVE race mass
+	// multiplier (~1.0 humanoid), so with referenceMass = 1.0 the anchors below
+	// hold and a heavier race scales up linearly.
 	[[nodiscard]] float DeriveCharacterStrength(const StrengthInputs& a_in);
 
 	// fPlayerMass * P^fMassPowerExponent: the mass the player *contests* with.

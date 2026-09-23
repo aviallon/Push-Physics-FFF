@@ -65,11 +65,40 @@ namespace pa
 			return value >= 0x10000 && (value & 0x7) == 0;
 		}
 
+		// TESRace::data.baseMass is a RELATIVE multiplier (~1.0 for humanoids), NOT
+		// kilograms, so it must be scaled by the default humanoid mass before it can
+		// stand in for a mass. Main-thread only (reached from FillEntry).
+		void NoteHeavyRaceOnce(const RE::TESRace* a_race, float a_scaledMass)
+		{
+			if (!a_race || !(a_race->data.baseMass > 1.5f)) {
+				return;  // ordinary humanoid-scale race: nothing to report
+			}
+			constexpr std::size_t kHeavyRaceSlots = 32;
+			static std::uint32_t  seen[kHeavyRaceSlots]{};
+			static std::size_t    seenCount = 0;
+			const auto            formID = a_race->formID;
+			for (std::size_t i = 0; i < seenCount; ++i) {
+				if (seen[i] == formID) {
+					return;
+				}
+			}
+			if (seenCount < kHeavyRaceSlots) {
+				seen[seenCount++] = formID;
+			}
+			// One line per heavy race ever registered. Reports the raw relative
+			// multiplier so a giant/dragon can be identified without building any
+			// escalation on top of it.
+			logger::info("target with heavy race registered: race=0x{:08X} baseMass={:.2f} "
+						 "(relative multiplier, not kg; fDefaultCharacterMass={:.0f}) -> mass={:.1f}",
+				formID, a_race->data.baseMass, Config::Get().defaultCharacterMass, a_scaledMass);
+		}
+
 		// Mass from the Havok proxy when the engine set one, else from the race's
-		// base mass. There is deliberately NO scale correction: the only source
-		// was TESObjectREFR::GetScale(), a REL::Relocation-backed call (AE id
-		// 19664), and a slightly wrong fallback mass is preferable to an
-		// unresolvable call on a bad actor.
+		// RELATIVE base mass scaled by the default humanoid mass. There is
+		// deliberately NO scale correction: the only source was
+		// TESObjectREFR::GetScale(), a REL::Relocation-backed call (AE id 19664),
+		// and a slightly wrong fallback mass is preferable to an unresolvable call
+		// on a bad actor.
 		[[nodiscard]] float MassForProxy(RE::hkpCharacterProxy* a_proxy, RE::Actor* a_actor, bool a_isPlayer)
 		{
 			const auto& cfg = Config::Get();
@@ -82,7 +111,8 @@ namespace pa
 				// ActorRuntimeData::race is a plain inline field; reading it does
 				// not go through Actor::GetRace()'s GetBaseObject() path.
 				if (auto* race = a_actor->GetActorRuntimeData().race) {
-					mass = race->data.baseMass;
+					mass = race->data.baseMass * cfg.defaultCharacterMass;
+					NoteHeavyRaceOnce(race, mass);
 				}
 			}
 			if (!(mass > 0.0f)) {
@@ -369,9 +399,9 @@ namespace pa
 			if (g_lastStatsMs == 0 || now - g_lastStatsMs >= statsMs) {
 				g_lastStatsMs = now;
 				auto* listener = GetPushListener();
-				logger::info("listener stats: character={} object={} constraints={} orphans={}",
+				logger::info("listener stats: character={} object={} constraints={} orphans={} pairs={}",
 					listener->CharacterCalls(), listener->ObjectCalls(),
-					listener->ConstraintCalls(), OrphanCallCount());
+					listener->ConstraintCalls(), OrphanCallCount(), PushModel::PairCount());
 			}
 		}
 	}
