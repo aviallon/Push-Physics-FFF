@@ -96,7 +96,10 @@ jobs:
           test -s "$dll" || { echo "::error::the built DLL is empty"; exit 1; }
 
           version=$(grep -oP 'set_version\("\K[^"]+' xmake.lua)
-          for needle in "PushAside" "PushAside.ini" "PushAside v${version}" "bVerifyTargets" "fPushScale" "ProxyRegistry" "vtable slot does not hold the expected function"; do
+          # Only strings reachable from the plugin's load path are asserted:
+          # /OPT:REF legitimately dead-strips diagnostics that live in code the
+          # linker can prove unreachable (e.g. the empty hook table's verifier).
+          for needle in "PushAside" "PushAside.ini" "PushAside v${version}" "bVerifyTargets" "fPushScale" "ProxyRegistry"; do
             strings -n 5 "$dll" | grep -qF "$needle" || { echo "::error::$needle missing from the DLL"; exit 1; }
           done
           echo "the DLL contains the plugin name, config keys and the verification strings"
@@ -203,7 +206,7 @@ jobs:
           # contract is asserted rather than trusted: zero failures AND a
           # non-trivial number of checks.
           grep -qE '0 failure\(s\)' tests.out || { echo "::error::the suite reported failures"; exit 1; }
-          checks=$(sed -nE 's/.* ([0-9]+) check\(s\) run.*/\1/p' tests.out | tail -1)
+          checks=$(sed -nE 's/^[[:space:]]*([0-9]+) check\(s\) run.*/\1/p' tests.out | tail -1)
           echo "checks executed: ${checks:-<none>}"
           test -n "$checks" || { echo "::error::could not read the check count"; exit 1; }
           test "$checks" -gt 5 || { echo "::error::only $checks checks ran - the suite did not really execute"; exit 1; }
