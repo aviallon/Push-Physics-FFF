@@ -218,6 +218,81 @@ The header and legend are written when the file is created; the trace stops at
 written through one buffered `FILE*`, flushed once per second. Only the main
 thread ever touches the files.
 
+## Unattended in-game harness
+
+`tools/ingame-harness.sh` drives an instrumented game run without a human at the
+keyboard: it snapshots the saves, launches Skyrim through SKSE, loads the most
+recent save, holds forward, runs a command list, collects the evidence and puts
+the saves back. Every wait is bounded and a frozen simulation fails loudly
+instead of producing a meaningless run.
+
+One full pass:
+
+```sh
+# snapshot -> start -> load -> walk 10 s -> status/vtables -> collect -> stop
+./tools/ingame-harness.sh run --walk 10 --cmd status --cmd vtables
+
+# the same stages by hand, when you want to look between them
+./tools/ingame-harness.sh snapshot
+./tools/ingame-harness.sh start
+./tools/ingame-harness.sh load
+./tools/ingame-harness.sh walk 10
+./tools/ingame-harness.sh cmd status
+./tools/ingame-harness.sh collect /tmp/pa-run
+./tools/ingame-harness.sh stop
+
+# what the harness would do, without touching anything
+./tools/ingame-harness.sh --dry-run run --walk 10 --cmd status
+./tools/ingame-harness.sh doctor
+```
+
+`collect` writes `PushAside.log`, `PushAside.out`, `PushAside.trace`, the newest
+`crash-*.log`/`CrashLogger.log`, `skse64_loader.log`, a thread sample on a hang,
+and a `MANIFEST.txt` with the DLL's `sha256` and the observed counters.
+
+### How it launches (and why)
+
+The game dir's `skse64_loader.exe` is a **symlink** into the Amethyst mod dir.
+Wine resolves it, so `GetModuleFileName` returns the mod dir and the loader
+aborts with `Couldn't find SkyrimSE.exe. You have installed the loader to the
+wrong folder.` `start` replaces the symlinks (`skse64_loader.exe`,
+`skse64_1_7_104.dll`, and `skse64_steam_loader.dll` when present) with real
+copies, records the original targets, and `stop` recreates the symlinks.
+`fix-links` / `restore-links` do the same thing on their own.
+
+The launcher is chosen from the app's real Steam launch options: this install's
+`489830` options are `DXVK_HDR=1 PROTON_ENABLE_WAYLAND=1 PROTON_ENABLE_HDR=1
+gamemoderun %command%`, which do **not** mention SKSE, so `steam -applaunch
+489830` would run `SkyrimSE.exe` without SKSE. The harness therefore uses
+`protontricks-launch --appid 489830 <game>/skse64_loader.exe`. Override with
+`PA_LAUNCH_CMD='...'` if that ever changes.
+
+### Caveats
+
+- **Focus is mandatory.** Skyrim does not step Havok while its window is
+  unfocused, so an unfocused run silently stalls. `start` activates the window
+  through KWin (`kdotool windowactivate`) and refuses to continue unless it can
+  confirm the window is active. `walk` fails if the plugin's `constraints=`
+  counter does not advance.
+- **Saves are restored.** `snapshot` tars the Proton-prefix `Saves` directory to
+  a run-scoped archive; `restore` mirrors it back with `rsync -a --delete`, so
+  autosaves created during a run do not survive. If the run archive is missing,
+  `restore` falls back to the orchestrator's full `~/pa-saves-backup-*` and says
+  so. Steam Cloud for this appid is **disabled**, so there is no cloud-sync
+  conflict; the restore exists purely so the user's 270-file save history is
+  never altered.
+- **`kdotool`/`dotool` come from nix.** They are taken from `PATH` when present,
+  otherwise from `nix shell nixpkgs#kdotool` / `nixpkgs#dotool`. They are never
+  installed system-wide. `dotool` needs write access to `/dev/uinput` (already
+  granted to this user).
+- **Hang safety.** A previous session hung with the plugin's counters frozen and
+  the main thread spinning. Every wait has a timeout; a freeze longer than
+  `PA_FREEZE_SEC` (default 8 s) grabs a `ps -L`/gdb `info threads` sample,
+  collects the evidence, kills the game and reports. `run` also has a hard
+  global timeout (`--timeout`, default 900 s) and always restores the saves.
+- The harness never touches the deployed `PushAside.dll` or `PushAside.ini`; the
+  caller manages those.
+
 ## Layout
 
 ```
