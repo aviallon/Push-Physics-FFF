@@ -95,7 +95,7 @@ def read_version() -> str:
 
 def parser_keys() -> set[tuple[str, str]]:
     source = (REPO_ROOT / "src" / "Config.cpp").read_text(encoding="utf-8")
-    pairs = re.findall(r'Read(?:Bool|UInt)\("([^"]+)",\s*"([^"]+)"', source)
+    pairs = re.findall(r'Read(?:Bool|UInt|Int|Float|String)\("([^"]+)",\s*"([^"]+)"', source)
     return {(section, key) for section, key in pairs}
 
 
