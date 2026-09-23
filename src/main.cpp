@@ -3,6 +3,7 @@
 #include "BuildInfo.h"
 #include "Config.h"
 #include "Health.h"
+#include "Hooks/MainUpdateHook.h"
 #include "ProxyRegistry.h"
 #include "PushManager.h"
 #include "PushModel.h"
@@ -69,14 +70,17 @@ SKSE_PLUGIN_LOAD(const SKSE::LoadInterface* a_skse)
 
 	pa::PushModel::SetMainThreadId(std::this_thread::get_id());
 
-	// No detour by default. Attaching needs a player proxy, which does not exist
-	// until a game is loaded; the main-thread pump attaches on load and re-attaches
-	// whenever the player's controller is rebuilt.
+	// The main-thread tick is driven by a verified MinHook function-entry detour
+	// on RE::Main::Update (src/Hooks/MainUpdateHook.cpp). Attaching needs a player
+	// proxy, which does not exist until a game is loaded; the tick attaches on
+	// load and re-attaches whenever the player's controller is rebuilt.
 	if (config.useEscalationHooks && !pa::InstallEscalationHooks()) {
 		logger::error("escalation hooks requested but none could be verified; continuing listener-only");
 	}
 
-	pa::ProxyRegistry::Get().StartMainThreadPump();
+	if (!pa::InstallMainUpdateHook()) {
+		logger::error("Main::Update hook not installed; attach/re-attach will not run per frame");
+	}
 
 	logger::info("health: {}", pa::Health::Get().Line());
 	logger::info("...ready");

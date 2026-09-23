@@ -14,7 +14,7 @@ namespace RE
 namespace pa
 {
 	// SPSC ring: the physics callback pushes a deferred stagger, the main-thread
-	// pump drains it (design.md 3.4). Fixed capacity, no allocation, no locks.
+	// tick drains it (design.md 3.4). Fixed capacity, no allocation, no locks.
 	class StaggerQueue
 	{
 	public:

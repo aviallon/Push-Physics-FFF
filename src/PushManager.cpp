@@ -27,7 +27,7 @@ namespace pa
 		try {
 			auto* proxy = PlayerProxy();
 			if (!proxy) {
-				// Expected before a game is loaded; the main-thread pump retries.
+				// Expected before a game is loaded; the main-thread tick retries.
 				return false;
 			}
 

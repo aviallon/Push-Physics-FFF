@@ -12,9 +12,23 @@ off-game tests). It applies **no impulse yet**: the listener callbacks are empty
 with TODOs. See the TODO list below.
 
 The push mechanism is **listener-attach**, not a code hook: the engine calls the
-player `bhkCharProxyController`'s `hkpCharacterProxyListener` virtuals, so
-`src/Hooks/HookTargets.def` stays empty and the table/verifier framework is kept
-compiled but unused (a documented fallback).
+player `bhkCharProxyController`'s `hkpCharacterProxyListener` virtuals. That
+still needs a **main-thread tick** to re-attach when the player's controller is
+rebuilt and to run the model's main-thread half. The tick is driven by a
+MinHook **function-entry detour on `RE::Main::Update`** (AE Address Library id
+36564, RVA `0x658870` on 1.7.104), verified at load against the committed
+`hooks/` table before anything is patched.
+
+### Why the tick is not an `SKSE::TaskInterface` task
+
+The first implementation queued a task with
+`SKSE::GetTaskInterface()->AddTask(*task)` and re-queued itself from **inside**
+the task, with the lambda capturing a `shared_ptr` to its own `std::function`.
+SKSE drains its task queue from within `Main::Update`, so a self-re-adding task
+never lets the queue drain: the game froze at the main menu while the periodic
+`listener stats:` heartbeat kept printing (the main thread was stuck in that
+loop, and the crash log showed the plugin on the `Main::Update` dispatch stack).
+The detour above removes the task/queue mechanism entirely.
 
 ## Goal
 
@@ -91,7 +105,7 @@ Manual install: copy `PushAside.dll` to `Data/SKSE/Plugins/` and the config to
 ```
 src/
   BuildInfo.h             version + build id
-  main.cpp                SKSE entry point (messages, config, registry init, pump)
+  main.cpp                SKSE entry point (messages, config, registry init, Main::Update detour)
   Config.{h,cpp}          INI config (research/design.md sec 6.3 schema), plugin directory
   Health.{h,cpp}          OK / DEGRADED / OFF verdict (gate 20)
   FrameClock.{h,cpp}      monotonic ms + once-per-frame key
@@ -106,17 +120,19 @@ src/
   PushListener.{h,cpp}    hkpCharacterProxyListener subclass (real overrides, orphan check)
   PushManager.{h,cpp}     vtable-checked attach, re-attach, calibration line
   Hooks/
-    HookTargets.def       escalation targets E1..E5 (commented; active list EMPTY)
+    HookTargets.def       the Main::Update detour target + E1..E5 (commented)
     HookTargets.h         X-macro expansion -> enum + metadata
     HookTable.{h,cpp}     strict parser for the committed verification table
     HookVerifier.{h,cpp}  identity + id + vtable slot + prologue-hash check
+    MainUpdateHook.{h,cpp} verified MinHook entry detour that drives the tick
+    HookTableData.gen.h   committed tables embedded in the DLL (generated)
 tools/
   gen-hooktable.py        regenerate the committed table (needs the game binary)
   check-hooktable.py      CI gate: completeness / consistency (no game needed)
   validate_fomod.py       self-contained FOMOD gate (keys, XML, package, flags)
 fomod/                    info.xml, ModuleConfig.xml, profiles/, schema/
 config/PushAside.ini      documented defaults
-hooks/                    committed verification tables (empty until an escalation is enabled)
+hooks/                    committed verification tables (AE 1.7.104: Main::Update)
 tests/                    off-game xmake project: verification infra + pure model maths
 research/build.md         the build/deploy verdict for this host
 ```

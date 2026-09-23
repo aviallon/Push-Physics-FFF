@@ -413,7 +413,7 @@ HEADER_PREAMBLE = """#pragma once
 
 #include <cstddef>
 
-namespace hs
+namespace pa
 {
 	struct EmbeddedHookTable
 	{

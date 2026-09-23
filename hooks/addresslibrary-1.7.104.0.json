@@ -1,0 +1,16 @@
+{
+  "schema": "pushaside.addresslibrary/1",
+  "version": "1.7.104.0",
+  "file": "versionlib-1-7-104-0.bin",
+  "format": 5,
+  "pointerSize": 8,
+  "dataFormat": 0,
+  "offsetCount": 565759,
+  "size": 2263132,
+  "sha256": "8aab3dd251d135b849bd983f86a4a205c920fa3e81f8e30c0e63ccfef9423842",
+  "base": 5368709120,
+  "note": "Only the ids the committed hook table needs. Committed so CI can check each record's id->rva without the third-party Address Library file, which is not redistributable and is not in this repository.",
+  "offsets": {
+    "36564": 6654064
+  }
+}

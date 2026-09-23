@@ -56,7 +56,11 @@ namespace pa
 		void Init(std::uint32_t a_capacity);   // main thread, before any reader
 		void Invalidate();                     // main thread, kPreLoadGame
 		void RebuildNow();                     // main thread
-		void StartMainThreadPump();            // schedules the recurring AddTask
+		// Main-thread tick, driven once per frame by the Main::Update detour
+		// (src/Hooks/MainUpdateHook.cpp): refresh the registry, drive
+		// attach/re-attach and the model's main-thread half, emit the debug
+		// heartbeat. No-op on the world until a game is loaded.
+		void MainThreadTick();
 
 		// Reader, any thread.
 		[[nodiscard]] bool Lookup(const RE::hkpCharacterProxy* a_proxy, ProxyEntry& a_out) const;

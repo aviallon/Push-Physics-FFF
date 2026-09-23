@@ -335,16 +335,47 @@ or `actor->GetRace()` there is a game-world access in a physics callback, which
 is exactly the kind of thing that works in a single-threaded test and crashes
 under a job queue. So:
 
-* `ProxyRegistry` is refreshed on the **main thread** through
-  `SKSE::GetTaskInterface()->AddTask(...)` every `fRegistryRefreshSec`
-  (default 1.0 s), and immediately on `kPostLoadGame` / `kNewGame`;
+* `ProxyRegistry` is refreshed on the **main thread** from a per-frame tick
+  driven by a MinHook **function-entry detour on `RE::Main::Update`** every
+  `fRegistryRefreshSec` (default 1.0 s), and immediately on `kPostLoadGame` /
+  `kNewGame`;
 * each entry is published behind a seqlock-style even/odd counter, so a reader
   on any thread sees a whole entry or falls back to defaults;
 * the stagger is *deferred*: the callback pushes `(proxy, dv, dir)` into a fixed
-  SPSC ring and the main-thread pump fires the animation event.
+  SPSC ring and the main-thread tick fires the animation event.
 
 So the physics callback touches exactly two things: `hkVector4` fields of Havok
 objects, and our own lock-free tables.
+
+#### 3.4.1 The tick must not be an `SKSE::TaskInterface` task (root cause, 2026-09-23)
+
+The first implementation refreshed the registry through
+`SKSE::GetTaskInterface()->AddTask(...)`, and re-queued that same task from
+**inside** it:
+
+```cpp
+// WRONG - do not reintroduce.
+auto task = std::make_shared<std::function<void()>>();
+*task = [task]() {
+    /* ... refresh, attach, sweep ... */
+    SKSE::GetTaskInterface()->AddTask(*task);  // re-adds itself, forever
+};
+SKSE::GetTaskInterface()->AddTask(*task);
+```
+
+SKSE drains its task queue from within `Main::Update`. A task that re-adds
+itself never lets the queue drain, so the game **froze at the main menu** while
+the periodic `listener stats:` line kept printing (the main thread was stuck in
+that dispatch, and the crash log showed the plugin on the `Main::Update` stack).
+The `shared_ptr` lambda capturing its own `std::function` was a reference cycle
+on top of the loop.
+
+The implemented mechanism deletes `StartMainThreadPump`/`AddTask` entirely. A
+MinHook entry detour on `RE::Main::Update` calls the original first and then runs
+`ProxyRegistry::MainThreadTick()` (registry refresh, dialogue state,
+`PushManagerMainThreadTick`, `PushModel::TickMainThread`, stats heartbeat). The
+thunk allocates nothing, is re-entrancy-guarded, and reads no world state unless
+`RE::PlayerCharacter::GetSingleton()` exists, so the main menu is cheap.
 
 ### 3.5 Registration, lifetime and the load cycle
 
@@ -405,7 +436,7 @@ every proxy — but the *owner* is not, so the load cycle is handled explicitly:
 |---|---|
 | `kPostLoadGame`, `kNewGame` | `ProxyRegistry::RebuildNow()`, `AttachTo(PlayerProxy())`, `PushModel::ApplyProxyTuning(player proxy)` (Approach A) |
 | `kPreLoadGame` | `PushRegistry::Clear()`, `ProxyRegistry::Invalidate()`, listener `Detach()` (drop `owner_`); the old proxy's array, if it is ever stepped again, calls us and the orphan check in §3.2 returns immediately |
-| main-thread pump (1 Hz) | if `PlayerProxy() != owner_`, re-attach: the player's controller is rebuilt on death/ragdoll/mount transitions |
+| main-thread tick (1 Hz) | if `PlayerProxy() != owner_`, re-attach: the player's controller is rebuilt on death/ragdoll/mount transitions |
 
 Death and ragdoll deserve a note: while the player is ragdolled the controller
 is replaced/disabled, so `PlayerProxy()` returns null and we simply stop
@@ -997,15 +1028,19 @@ SKSE_PLUGIN_LOAD(const SKSE::LoadInterface* a_skse)
 	ha::PushRegistry::Get().Init(ha::Config::Get().registryCapacity);
 
 	// No detour by default. Attaching needs a player proxy, which does not exist
-	// until a game is loaded; the main-thread pump (below) attaches on load and
+	// until a game is loaded; the main-thread tick (below) attaches on load and
 	// re-attaches whenever the player's controller is rebuilt.
 	if (ha::Config::Get().useEscalationHooks && !ha::InstallEscalationHooks()) {
 		logger::error("escalation hooks requested but none could be verified; continuing listener-only");
 	}
 
-	// Main-thread pump: registry refresh, player-proxy attach/re-attach, deferred
-	// staggers, buffer sweep, and the bounded stats line.
-	ha::ProxyRegistry::Get().StartMainThreadPump();
+	// Main-thread tick: a verified MinHook function-entry detour on
+	// RE::Main::Update drives the registry refresh, player-proxy attach/re-attach,
+	// deferred staggers, buffer sweep and the bounded stats line. It is NOT an
+	// SKSE AddTask task (a self-re-adding task froze the game; see §3.4.1).
+	if (!pa::InstallMainUpdateHook()) {
+		logger::error("Main::Update hook not installed; attach/re-attach will not run per frame");
+	}
 
 	logger::info("health: {}", ha::Health::Line());
 	return true;

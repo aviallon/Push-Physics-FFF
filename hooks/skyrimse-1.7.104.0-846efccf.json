@@ -1,0 +1,52 @@
+{
+  "schema": "pushaside.hooktable/1",
+  "generator": "tools/gen-hooktable.py",
+  "identity": {
+    "module": "SkyrimSE.exe",
+    "version": "1.7.104.0",
+    "size": 37910440,
+    "timeDateStamp": 1787588678,
+    "sizeOfImage": 59936768,
+    "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+  },
+  "addressLibrary": {
+    "file": "versionlib-1-7-104-0.bin",
+    "format": 5,
+    "version": "1.7.104.0",
+    "pointerSize": 8,
+    "dataFormat": 0,
+    "offsetCount": 565759,
+    "size": 2263132,
+    "sha256": "8aab3dd251d135b849bd983f86a4a205c920fa3e81f8e30c0e63ccfef9423842"
+  },
+  "names": {
+    "source": "meh321/AddressLibraryDatabase",
+    "url": "https://github.com/meh321/AddressLibraryDatabase",
+    "file": "skyrimae.rename",
+    "licence": "the repository carries no LICENSE file (checked 2026-09-22); names are recorded here as identifiers/provenance only, and no bulk data from it is vendored"
+  },
+  "licensing": {
+    "policy": "hashes + offsets + names only",
+    "prologueBytesCommitted": false,
+    "note": "No byte of SkyrimSE.exe is committed. Each record carries an RVA, a length and a 64-bit FNV-1a hash of the first N bytes, which verifies identity exactly as well as a verbatim prologue would."
+  },
+  "hash": {
+    "algorithm": "fnv1a64",
+    "offsetBasis": "0xcbf29ce484222325",
+    "prime": "0x100000001b3"
+  },
+  "targets": [
+    {
+      "target": "Main::Update",
+      "kind": "rva",
+      "seId": 35551,
+      "aeId": 36564,
+      "name": "Main::Update_*",
+      "rva": 6654064,
+      "pdataExtent": 3183,
+      "slotLength": 3200,
+      "prologueLength": 32,
+      "prologueHash": 13322326828204480676
+    }
+  ]
+}

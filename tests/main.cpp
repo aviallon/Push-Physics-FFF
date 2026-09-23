@@ -6,6 +6,7 @@
 // exercised here rather than only on the game machine. No game binary and no
 // Address Library are involved.
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -66,9 +67,24 @@ namespace
 
 int main()
 {
-	// The scaffold declares no hook targets; the registry must therefore be a
-	// valid, empty std::array (not a zero-sized C array).
-	Check(pa::kHookTargetCount == 0, "the scaffold hook-target list is empty");
+	// The active list declares the Main::Update detour target that drives the
+	// main-thread tick. The def, the committed table and the runtime check all
+	// join on this display name, so pin it here.
+	Check(pa::kHookTargetCount >= 1, "the hook-target list is not empty");
+	{
+		bool found = false;
+		for (std::size_t i = 0; i < pa::kHookTargetCount; ++i) {
+			const auto& target = pa::GetHookTarget(static_cast<pa::HookTargetId>(i));
+			if (std::strcmp(target.name, "Main::Update") == 0) {
+				found = true;
+				Check(target.kind == pa::HookKind::kRva, "Main::Update is an rva target");
+				Check(target.aeId == 36564, "Main::Update AE id is 36564");
+				Check(target.seId == 35551, "Main::Update SE id is 35551");
+				Check(target.vtableId == 0 && target.vtableSlot == 0, "Main::Update carries no vtable id/slot");
+			}
+		}
+		Check(found, "the Main::Update target is declared");
+	}
 
 	// FNV-1a 64 is pinned to known vectors so the C++ and the Python
 	// implementation in tools/gen-hooktable.py cannot silently diverge.

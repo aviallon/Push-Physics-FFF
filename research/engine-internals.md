@@ -359,6 +359,17 @@ proxy→Actor registry, or comparing against `PlayerCharacter::GetSingleton()`.
 (AE **78302**, RVA 0x1066C60) or `AIProcess::KnockExplosion` (AE **39895**) if
 you want the reaction to reuse the engine's own debris/knock behaviour.
 
+**Separately, the main-thread tick is a function-entry detour on
+`RE::Main::Update`** (AE **36564**, RVA **0x658870**, SE 35551 recorded from
+CommunityShaders). It is *not* a push hook and not a push mechanism: it just
+drives `ProxyRegistry` refresh, listener attach/re-attach, the deferred stagger
+drain and the stats heartbeat once per frame. It is verified against
+`hooks/skyrimse-1.7.104.0-846efccf.json` before MinHook patches anything. The
+crash stack's "Main::Update dispatch" at `SkyrimSE.exe+0x659423` lies inside
+this function (pdata extent 0x658870..0x6594DF). Do **not** reintroduce the
+first implementation's `SKSE::GetTaskInterface()->AddTask` self-re-adding loop
+(see research/design.md §3.4.1): it froze the game at the main menu.
+
 ### Verification hashes (HeapSentinel convention: AE target + vtable id/slot)
 
 | target | AE id | kind | vtable id | slot | RVA | pdataExtent | prologueLen | FNV-1a-64 |
@@ -370,6 +381,7 @@ you want the reaction to reuse the engine's own debris/knock behaviour.
 | `bhkCharacterController::TryMoveTo` | 78260 | kRva | 0 | 0 | 0x1063E80 | 1770 | 32 | 0xBF13EEDC2AA50D7E |
 | `bhkCharacterController::ProcessHurtfulBody` | 78302 | kRva | 0 | 0 | 0x1066C60 | 745 | 32 | 0x2C94B2F04299680F |
 | `hkpMotion::ApplyLinearImpulse` | 60970 | kVtable | 227961 | 0x13 | 0xB4F610 | null | 32 | 0xC0CB45878D4C5623 |
+| `RE::Main::Update` (main-thread tick) | 36564 | kRva | 0 | 0 | 0x658870 | 3183 | 32 | 0xB8E269AA60C8D8A4 |
 
 (Slot 0x13 for `hkpMotion` was verified by reading the vtable: slot 19 holds
 RVA 0xB4F610; slots 5–10, 18, 20 are `_purecall`, id 109686.)

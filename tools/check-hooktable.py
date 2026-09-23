@@ -257,7 +257,7 @@ def main() -> int:
         path = os.path.join(HOOKS_DIR, filename)
         with open(path, encoding="utf-8") as f:
             table = json.load(f)
-        if table.get("schema") != "heapsentinel.hooktable/1":
+        if table.get("schema") != "pushaside.hooktable/1":
             err(f"{path}: unexpected schema {table.get('schema')!r}")
             continue
         slice_name = f"addresslibrary-{table['identity']['version']}.json"

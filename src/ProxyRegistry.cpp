@@ -234,19 +234,20 @@ namespace pa
 		}
 	}
 
-	void ProxyRegistry::StartMainThreadPump()
+	void ProxyRegistry::MainThreadTick()
 	{
-		auto task = std::make_shared<std::function<void()>>();
-		*task = [task]() {
-			if (!SKSE::GetTaskInterface()) {
-				return;
-			}
+		const auto now = FrameClock::NowMs();
+		const auto dtMs = g_lastPumpMs == 0 ? 0 : now - g_lastPumpMs;
+		g_lastPumpMs = now;
 
-			const auto now = FrameClock::NowMs();
-			const auto dtMs = g_lastPumpMs == 0 ? 0 : now - g_lastPumpMs;
-			g_lastPumpMs = now;
+		// Nothing below may touch the world before a save is loaded: ProcessLists
+		// exists at the main menu but has no live actors, and the player's proxy
+		// does not exist yet. The tick still runs every frame (it is also the
+		// heartbeat), it just does no world work until PlayerCharacter exists.
+		const bool gameLoaded = RE::PlayerCharacter::GetSingleton() != nullptr;
 
-			auto& registry = ProxyRegistry::Get();
+		if (gameLoaded) {
+			auto&      registry = ProxyRegistry::Get();
 			const auto refreshMs = static_cast<std::uint64_t>(
 				std::max(0.0f, Config::Get().registryRefreshSec) * 1000.0f);
 			if (g_lastRebuildMs == 0 || now - g_lastRebuildMs >= refreshMs) {
@@ -262,29 +263,25 @@ namespace pa
 			// staggers; sweep/debug-damp the push buffer.
 			PushManagerMainThreadTick();
 			PushModel::TickMainThread(static_cast<float>(dtMs) / 1000.0f);
+		}
 
-			// Instrumentation (design §7 step 3). Whether Havok dispatches the
-			// character-interaction virtual is the one thing that cannot be verified
-			// off-game, so the listener counters must be *observable* in the log, not
-			// merely incremented. Gated on bDebugLog: a shipped install should not
-			// write a stats line forever, and the first-run instrumentation profile
-			// turns it on.
-			if (Config::Get().debugLog) {
-				const auto statsMs = static_cast<std::uint64_t>(
-					std::max(1.0f, Config::Get().calibrationLogAfterSec) * 1000.0f);
-				if (g_lastStatsMs == 0 || now - g_lastStatsMs >= statsMs) {
-					g_lastStatsMs = now;
-					auto* listener = GetPushListener();
-					logger::info("listener stats: character={} object={} constraints={} orphans={}",
-						listener->CharacterCalls(), listener->ObjectCalls(),
-						listener->ConstraintCalls(), OrphanCallCount());
-				}
+		// Instrumentation (design §7 step 3). Whether Havok dispatches the
+		// character-interaction virtual is the one thing that cannot be verified
+		// off-game, so the listener counters must be *observable* in the log, not
+		// merely incremented. Gated on bDebugLog: a shipped install should not
+		// write a stats line forever, and the first-run instrumentation profile
+		// turns it on. This fires at the main menu too, so "0" cannot be mistaken
+		// for "the hook is not running".
+		if (Config::Get().debugLog) {
+			const auto statsMs = static_cast<std::uint64_t>(
+				std::max(1.0f, Config::Get().calibrationLogAfterSec) * 1000.0f);
+			if (g_lastStatsMs == 0 || now - g_lastStatsMs >= statsMs) {
+				g_lastStatsMs = now;
+				auto* listener = GetPushListener();
+				logger::info("listener stats: character={} object={} constraints={} orphans={}",
+					listener->CharacterCalls(), listener->ObjectCalls(),
+					listener->ConstraintCalls(), OrphanCallCount());
 			}
-
-			SKSE::GetTaskInterface()->AddTask(*task);
-		};
-
-		SKSE::GetTaskInterface()->AddTask(*task);
-		logger::info("main-thread pump started");
+		}
 	}
 }

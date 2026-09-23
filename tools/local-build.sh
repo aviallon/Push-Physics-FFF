@@ -68,6 +68,7 @@ fi
 INC="-imsvc $XWIN/crt/include -imsvc $XWIN/sdk/include/ucrt \
      -imsvc $XWIN/sdk/include/shared -imsvc $XWIN/sdk/include/um \
      -I $CLNG/include -I $CLNG/src \
+     -I $MINHOOK/include \
      -I $DXM/Inc -I $DXT/Inc -I $SPD/include"
 
 # spdlog is compiled as a static lib by CLNG's package config (header_only=false),
