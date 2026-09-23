@@ -39,10 +39,37 @@ namespace pa
 		bool verifyTargets = true;
 
 		// [Physics] Approach A: the proxy's own knobs (rigid bodies only).
-		// < 0 leaves the engine value (characterStrength defaults to FLT_MAX,
-		// characterMass to 0).
+		// fCharacterStrength < 0 (default -1) derives the value from the player's
+		// race mass, level and physical skills (see the fields below); >= 0 is an
+		// explicit override used verbatim. characterMass < 0 leaves the engine
+		// value (defaults to 0).
 		float characterStrength = -1.0f;
 		float characterMass = -1.0f;
+
+		// [Physics] Character-strength derivation. Havok's CharacterInteractionDemo
+		// uses 5000 as m_characterStrength; there is no engine-set value (measured
+		// FLT_MAX), so 5000 is the base. P is normalised so P = 1 at level 1 with a
+		// physical-skill mean of 0.15, then the fitted anchors are L50/skill0.80 ->
+		// P = 6 (~30k) and L252/skill1.00 -> P ~ 26.65 (~133k).
+		// characterStrength = base * P * (raceBaseMass / referenceMass), clamped to
+		// [fStrengthMin, fStrengthMax].
+		float strengthBase = 5000.0f;
+		float strengthReferenceMass = 80.0f;
+		float strengthLevelGain = 0.05f;
+		float strengthSkillGain = 1.371f;
+		float strengthMin = 500.0f;
+		float strengthMax = 200000.0f;
+		// Effective player mass contested in the push model:
+		// fPlayerMass * P^fMassPowerExponent (100 at base, ~350 at L50/skill0.80,
+		// ~1000 at L252/skill1.00), so a maxed player can contest dragon-scale mass.
+		float massPowerExponent = 0.7f;
+		// Physical-skill weights (One-Handed, Two-Handed, Block, Heavy Armor,
+		// Archery). They are normalised by their sum, so only their ratios matter.
+		float strengthWeightOneHanded = 0.30f;
+		float strengthWeightTwoHanded = 0.25f;
+		float strengthWeightBlock = 0.20f;
+		float strengthWeightHeavyArmor = 0.15f;
+		float strengthWeightArchery = 0.10f;
 
 		// [Physics] Mass model. Only ratios matter; absolute values do not.
 		float playerMass = 100.0f;

@@ -47,37 +47,53 @@ namespace pa
 		return static_cast<RE::bhkCharProxyController*>(a_ctrl);
 	}
 
-	RE::bhkCharProxyController* ControllerOf(RE::hkpCharacterProxy* a_proxy)
-	{
-		if (!a_proxy) {
-			return nullptr;
-		}
-
-		auto* candidate = reinterpret_cast<RE::bhkCharProxyController*>(
-			reinterpret_cast<std::uint8_t*>(a_proxy) - 0x350);
-
-		// 1. the candidate must be a bhkCharProxyController (listener vtable 240558)
-		static REL::Relocation<std::uintptr_t> kListenerVtable{ RE::VTABLE_bhkCharProxyController[0] };
-		const auto                             expected = kListenerVtable.address();
-		if (!VtableResolved(expected, "bhkCharProxyController[0]")) {
-			return nullptr;
-		}
-		if (*reinterpret_cast<const void* const*>(candidate) !=
-			reinterpret_cast<const void*>(expected)) {
-			return nullptr;
-		}
-
-		// 2. and it must point back at exactly this proxy (definitive, free)
-		return candidate->GetCharacterProxy() == a_proxy ? candidate : nullptr;
-	}
-
-	RE::hkpCharacterProxy* PlayerProxy()
+	RE::bhkCharProxyController* PlayerController()
 	{
 		auto* player = RE::PlayerCharacter::GetSingleton();
 		if (!player) {
 			return nullptr;
 		}
-		auto* pc = AsProxyController(player->GetCharController());
+		return AsProxyController(player->GetCharController());
+	}
+
+	RE::hkpCharacterProxy* PlayerProxy()
+	{
+		auto* pc = PlayerController();
 		return pc ? pc->GetCharacterProxy() : nullptr;
+	}
+
+	void LogRetiredInversionOnce(RE::hkpCharacterProxy* a_proxy)
+	{
+		if (!a_proxy) {
+			return;
+		}
+		// One call per process: this is a diagnostic, not a gate.
+		static std::atomic<bool> logged{ false };
+		bool                     expected = false;
+		if (!logged.compare_exchange_strong(expected, true, std::memory_order_relaxed)) {
+			return;
+		}
+
+		static REL::Relocation<std::uintptr_t> kListenerVtable{ RE::VTABLE_bhkCharProxyController[0] };
+		const auto                             expectedVtable = kListenerVtable.address();
+		if (expectedVtable == 0) {
+			return;
+		}
+
+		// The retired inversion assumed the hkpCharacterProxy were embedded at
+		// controller + 0x350. It is not: the controller holds a pointer to a
+		// separately allocated proxy, so this qword is read only to *show* the
+		// mismatch. The old code already read it every frame without faulting.
+		const auto observed = *reinterpret_cast<const std::uintptr_t*>(
+			reinterpret_cast<const std::uint8_t*>(a_proxy) - 0x350);
+		if (observed == expectedVtable) {
+			return;  // the retired inversion happens to hold here; nothing to report
+		}
+
+		logger::warn(
+			"retired controller inversion diagnostic (one-shot, no longer gates attach): "
+			"*(void**)(proxy-0x350)=0x{:X}, expected listener vtable 0x{:X}; "
+			"the verified controller is used instead",
+			observed, expectedVtable);
 	}
 }

@@ -11,6 +11,11 @@
 // array, so `a_proxy` in every callback is the player's proxy by construction
 // and `owner_` is the orphan discriminator (design.md 3.2).
 
+namespace RE
+{
+	class bhkCharProxyController;
+}
+
 namespace pa
 {
 	class PushListener final : public RE::hkpCharacterProxyListener
@@ -29,8 +34,11 @@ namespace pa
 		// Slot 5 - Path 2: the player's capsule contacts a rigid body.
 		void ObjectInteractionCallback(RE::hkpCharacterProxy* a_proxy, const RE::hkpCharacterObjectInteractionEvent& a_input, RE::hkpCharacterObjectInteractionResult& a_output) override;
 
-		void AttachTo(RE::hkpCharacterProxy* a_proxy);  // main thread only, idempotent
-		void Detach();                                  // main thread only
+		// Main thread only, idempotent. `a_controller` must be the already-verified
+		// controller from PlayerController()/AsProxyController(); the proxy is read
+		// back from it. Returns true once `owner_` is that controller's proxy.
+		[[nodiscard]] bool AttachTo(RE::bhkCharProxyController* a_controller);
+		void              Detach();  // main thread only
 		[[nodiscard]] RE::hkpCharacterProxy* Owner() const { return owner_; }
 
 		[[nodiscard]] std::uint64_t CharacterCalls() const { return characterCalls_.load(std::memory_order_relaxed); }

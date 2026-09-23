@@ -11,6 +11,8 @@
 #include "StaggerQueue.h"
 #include "Health.h"
 
+#include <RE/A/Actor.h>
+#include <RE/T/TESRace.h>
 #include <RE/H/hkContactPoint.h>
 #include <RE/H/hkpCharacterProxy.h>
 #include <RE/H/hkpCharacterProxyListener.h>
@@ -33,6 +35,12 @@ namespace pa
 		std::atomic<std::uint32_t> g_callbackThreadId{ 0 };
 		std::atomic<bool>          g_calibrationLogged{ false };
 		std::atomic<bool>          g_objectNormalLogged{ false };
+
+		// Effective player mass contested in the push model: fPlayerMass *
+		// P^fMassPowerExponent. Written on the main thread, read by the physics
+		// callback, so it is an atomic float. 0 means "not computed yet".
+		std::atomic<float> g_effectivePlayerMass{ 0.0f };
+		std::uint64_t      g_lastPowerRefreshMs = 0;  // main thread only
 
 		std::atomic<std::uint64_t> g_debugWindowMs{ 0 };
 		std::atomic<std::uint32_t> g_debugCount{ 0 };
@@ -73,6 +81,116 @@ namespace pa
 				return ToVec3(a_proxy->shapePhantom->motionState.transform.translation);
 			}
 			return {};
+		}
+
+		[[nodiscard]] float EffectivePlayerMass()
+		{
+			const float mass = g_effectivePlayerMass.load(std::memory_order_relaxed);
+			return mass > 0.0f ? mass : Config::Get().playerMass;
+		}
+
+		// "Unknown target" diagnostics: design gate 16 pushes an unregistered
+		// proxy conservatively (unknown mass, fUnknownTargetScale) and never
+		// staggers. The note must be at most once per target and bounded, so it
+		// cannot itself become the next physics-callback log flood. Deliberately
+		// debug-only.
+		constexpr std::size_t              kUnknownTargetSlots = 64;
+		std::atomic<RE::hkpCharacterProxy*> g_unknownTargets[kUnknownTargetSlots]{};
+
+		void NoteUnknownTargetOnce(RE::hkpCharacterProxy* a_proxy)
+		{
+			if (!a_proxy || !Config::Get().debugLog) {
+				return;
+			}
+			for (const auto& slot : g_unknownTargets) {
+				if (slot.load(std::memory_order_relaxed) == a_proxy) {
+					return;  // already noted for this target
+				}
+			}
+			for (auto& slot : g_unknownTargets) {
+				RE::hkpCharacterProxy* expected = nullptr;
+				if (slot.compare_exchange_strong(expected, a_proxy, std::memory_order_relaxed)) {
+					logger::info("character interaction: unknown target 0x{:X} is not in the proxy registry; "
+								 "conservative scaling (gate 16), no stagger",
+						reinterpret_cast<std::uintptr_t>(a_proxy));
+					return;
+				}
+			}
+			// Table full: stop noting (bounded), never per frame.
+		}
+
+		// Fill the pure derivation inputs from the live player. Race mass is an
+		// inline TESRace::data field and the five skills go through the
+		// ActorValueOwner virtual, so neither path can be an unresolved
+		// relocation. Actor::GetLevel() is relocation-backed: resolve it here and
+		// refuse to call an unresolved (AE-id-0) id, the failure mode of the
+		// 95f2485 crash, falling back to level 1 (neutral level term).
+		[[nodiscard]] bool FillStrengthInputsFromPlayer(const Config& a_cfg, math::StrengthInputs& a_in)
+		{
+			a_in.base = a_cfg.strengthBase;
+			a_in.referenceMass = a_cfg.strengthReferenceMass;
+			a_in.levelGain = a_cfg.strengthLevelGain;
+			a_in.skillGain = a_cfg.strengthSkillGain;
+			a_in.minStrength = a_cfg.strengthMin;
+			a_in.maxStrength = a_cfg.strengthMax;
+			a_in.weightOneHanded = a_cfg.strengthWeightOneHanded;
+			a_in.weightTwoHanded = a_cfg.strengthWeightTwoHanded;
+			a_in.weightBlock = a_cfg.strengthWeightBlock;
+			a_in.weightHeavyArmor = a_cfg.strengthWeightHeavyArmor;
+			a_in.weightArchery = a_cfg.strengthWeightArchery;
+
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			if (!player) {
+				return false;
+			}
+
+			if (auto* race = player->GetActorRuntimeData().race) {
+				a_in.raceBaseMass = race->data.baseMass;
+				a_in.raceFormID = race->formID;
+			}
+
+			using GetLevelFn = std::uint16_t (RE::Actor::*)(void) const;
+			static REL::Relocation<GetLevelFn> getLevel{ REL::RelocationID(36344, 37334) };
+			if (getLevel.address() != 0) {
+				a_in.level = static_cast<float>(getLevel(player));
+			}
+
+			if (auto* valueOwner = player->AsActorValueOwner()) {
+				a_in.oneHanded = valueOwner->GetActorValue(RE::ActorValue::kOneHanded);
+				a_in.twoHanded = valueOwner->GetActorValue(RE::ActorValue::kTwoHanded);
+				a_in.block = valueOwner->GetActorValue(RE::ActorValue::kBlock);
+				a_in.heavyArmor = valueOwner->GetActorValue(RE::ActorValue::kHeavyArmor);
+				a_in.archery = valueOwner->GetActorValue(RE::ActorValue::kArchery);
+			}
+			return true;
+		}
+
+		void LogStrengthDerivationOnce(const math::StrengthInputs& a_in, float a_strength, float a_power, float a_effectiveMass, bool a_havePlayer)
+		{
+			static std::atomic<bool> logged{ false };
+			if (logged.exchange(true, std::memory_order_relaxed)) {
+				return;
+			}
+			logger::info(
+				"strength derivation (one-shot): race=0x{:08X} raceBaseMass={:.1f} referenceMass={:.1f} level={:.0f} "
+				"skills 1H={:.0f} 2H={:.0f} Block={:.0f} HA={:.0f} Archery={:.0f} "
+				"base={:.0f} levelGain={:.2f} skillGain={:.2f} -> P={:.3f} characterStrength={:.1f} "
+				"effectiveMass={:.1f}{}",
+				a_in.raceFormID, a_in.raceBaseMass, a_in.referenceMass, a_in.level,
+				a_in.oneHanded, a_in.twoHanded, a_in.block, a_in.heavyArmor, a_in.archery,
+				a_in.base, a_in.levelGain, a_in.skillGain, a_power, a_strength, a_effectiveMass,
+				a_havePlayer ? "" : " (no player: defaults)");
+		}
+
+		// Main-thread: compute P and publish the mass the player contests with. The
+		// physics callback only ever reads the atomic; it never touches the Actor.
+		[[nodiscard]] float PublishPlayerPower(const Config& a_cfg, math::StrengthInputs& a_in, bool& a_havePlayer)
+		{
+			a_havePlayer = FillStrengthInputsFromPlayer(a_cfg, a_in);
+			const float power = a_havePlayer ? math::StrengthPower(a_in) : 1.0f;
+			g_effectivePlayerMass.store(math::EffectivePlayerMass(a_cfg.playerMass, power, a_cfg.massPowerExponent),
+				std::memory_order_relaxed);
+			return power;
 		}
 	}
 
@@ -121,6 +239,9 @@ namespace pa
 
 		ProxyEntry     otherInfo{};
 		const bool     known = proxies.Lookup(a_other, otherInfo);
+		if (!known) {
+			NoteUnknownTargetOnce(a_other);
+		}
 
 		math::GateInputs gates;
 		gates.enabled = cfg.enabled;
@@ -159,7 +280,7 @@ namespace pa
 			return;
 		}
 
-		const float m_s = cfg.playerMass;  // self is the player's proxy by construction
+		const float m_s = EffectivePlayerMass();  // self is the player's proxy by construction
 		const float m_o = known ? otherInfo.mass : cfg.defaultCharacterMass;
 
 		const float mu = math::MassRatio(m_s, m_o, cfg.massRatioMax);
@@ -229,14 +350,17 @@ namespace pa
 			return;
 		}
 
-		// Do not launch dragons/mammoths by walking into them.
+		// Do not launch dragons/mammoths by walking into them. The comparison uses
+		// the effective player mass (fPlayerMass * P^fMassPowerExponent), so a
+		// maxed player contests dragon-scale mass instead of being curbstomped.
+		const float effectiveMass = EffectivePlayerMass();
 		const float bodyMass = 1.0f / a_input->objectMassInv;
-		if (bodyMass > cfg.heavyMassRatio * cfg.playerMass) {
+		if (bodyMass > cfg.heavyMassRatio * effectiveMass) {
 			return;
 		}
 
 		if (cfg.objectCustomImpulse) {
-			const float m_char = cfg.playerMass;
+			const float m_char = effectiveMass;
 			const float m_char_inv = m_char > 0.0f ? 1.0f / m_char : 0.0f;
 			// Sign measured in game (design.md 4.2): v_close = -projectedVelocity.
 			const float v_close = -a_input->projectedVelocity;
@@ -287,12 +411,35 @@ namespace pa
 		const auto& cfg = Config::Get();
 		const float beforeStrength = a_playerProxy->characterStrength;
 		const float beforeMass = a_playerProxy->characterMass;
-		if (cfg.characterStrength >= 0.0f) {
-			a_playerProxy->characterStrength = cfg.characterStrength;
+		bool        changed = false;
+
+		// Always publish P and the contested mass; the strength knob itself is the
+		// derived value (fCharacterStrength < 0) or an explicit override (>= 0).
+		math::StrengthInputs in;
+		bool                havePlayer = false;
+		const float         power = PublishPlayerPower(cfg, in, havePlayer);
+		const float         effectiveMass = EffectivePlayerMass();
+		const float         strength = math::ResolveCharacterStrength(cfg.characterStrength, in);
+		LogStrengthDerivationOnce(in, strength, power, effectiveMass, havePlayer);
+
+		if (a_playerProxy->characterStrength != strength) {
+			a_playerProxy->characterStrength = strength;
+			changed = true;
 		}
-		if (cfg.characterMass >= 0.0f) {
+
+		if (cfg.characterMass >= 0.0f && a_playerProxy->characterMass != cfg.characterMass) {
 			a_playerProxy->characterMass = cfg.characterMass;
+			changed = true;
 		}
+
+		// BUG 2: this used to log unconditionally, every frame. Log only when a
+		// value actually changed or once per proxy (the first attach); a re-attach
+		// to the same value writes nothing.
+		static RE::hkpCharacterProxy* lastLogged = nullptr;
+		if (!changed && lastLogged == a_playerProxy) {
+			return;
+		}
+		lastLogged = a_playerProxy;
 		logger::info("proxy tuning: characterStrength {:.1f} -> {:.1f}, characterMass {:.2f} -> {:.2f}",
 			beforeStrength, a_playerProxy->characterStrength, beforeMass, a_playerProxy->characterMass);
 	}
@@ -300,6 +447,17 @@ namespace pa
 	void PushModel::TickMainThread(float a_deltaSec)
 	{
 		const auto& cfg = Config::Get();
+
+		// Level and skills change at runtime (level-ups, skill training). Refresh the
+		// published effective mass at most once per second; the physics callback
+		// reads only the atomic, and this never logs.
+		const auto nowMs = FrameClock::NowMs();
+		if (g_lastPowerRefreshMs == 0 || nowMs - g_lastPowerRefreshMs >= 1000) {
+			g_lastPowerRefreshMs = nowMs;
+			math::StrengthInputs in;
+			bool                havePlayer = false;
+			PublishPlayerPower(cfg, in, havePlayer);
+		}
 
 		// Drain deferred staggers. The view is deliberately only read/queued here.
 		StaggerQueue::Entry entry;

@@ -134,6 +134,20 @@ namespace pa
 		characterStrength = ReadFloat("Physics", "fCharacterStrength", characterStrength, ini);
 		characterMass = ReadFloat("Physics", "fCharacterMass", characterMass, ini);
 
+		// [Physics] character-strength derivation
+		strengthBase = ReadFloat("Physics", "fStrengthBase", strengthBase, ini);
+		strengthReferenceMass = ReadFloat("Physics", "fStrengthReferenceMass", strengthReferenceMass, ini);
+		strengthLevelGain = ReadFloat("Physics", "fStrengthLevelGain", strengthLevelGain, ini);
+		strengthSkillGain = ReadFloat("Physics", "fStrengthSkillGain", strengthSkillGain, ini);
+		strengthMin = ReadFloat("Physics", "fStrengthMin", strengthMin, ini);
+		strengthMax = ReadFloat("Physics", "fStrengthMax", strengthMax, ini);
+		massPowerExponent = ReadFloat("Physics", "fMassPowerExponent", massPowerExponent, ini);
+		strengthWeightOneHanded = ReadFloat("Physics", "fStrengthWeightOneHanded", strengthWeightOneHanded, ini);
+		strengthWeightTwoHanded = ReadFloat("Physics", "fStrengthWeightTwoHanded", strengthWeightTwoHanded, ini);
+		strengthWeightBlock = ReadFloat("Physics", "fStrengthWeightBlock", strengthWeightBlock, ini);
+		strengthWeightHeavyArmor = ReadFloat("Physics", "fStrengthWeightHeavyArmor", strengthWeightHeavyArmor, ini);
+		strengthWeightArchery = ReadFloat("Physics", "fStrengthWeightArchery", strengthWeightArchery, ini);
+
 		// [Physics] mass model
 		playerMass = ReadFloat("Physics", "fPlayerMass", playerMass, ini);
 		defaultCharacterMass = ReadFloat("Physics", "fDefaultCharacterMass", defaultCharacterMass, ini);

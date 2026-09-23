@@ -60,16 +60,28 @@ namespace pa
 		return g_orphanCalls.load(std::memory_order_relaxed);
 	}
 
-	void PushListener::AttachTo(RE::hkpCharacterProxy* a_proxy)
+	bool PushListener::AttachTo(RE::bhkCharProxyController* a_controller)
 	{
-		if (!a_proxy || owner_ == a_proxy) {
-			return;
+		if (!a_controller) {
+			return false;
 		}
-		// Only a proxy whose offset-inverted controller verifies may be attached.
-		if (!ControllerOf(a_proxy)) {
-			logger::warn("listener attach refused: 0x{:X} is not a verifiable bhkCharProxyController proxy",
-				reinterpret_cast<std::uintptr_t>(a_proxy));
-			return;
+
+		// The controller was already verified with its vtable (AsProxyController /
+		// PlayerController); its proxy is the authority. The old
+		// proxy -> controller inversion (proxy - 0x350) is retired: the proxy is a
+		// separately allocated Havok object, so its address has no fixed relation
+		// to the controller's, and the inversion refused a real player proxy every
+		// frame (BUG 1).
+		auto* a_proxy = a_controller->GetCharacterProxy();
+		if (!a_proxy) {
+			return false;
+		}
+
+		// One-shot, non-gating: keep the retired inversion's mismatch visible.
+		LogRetiredInversionOnce(a_proxy);
+
+		if (owner_ == a_proxy) {
+			return true;
 		}
 
 		// Record ownership BEFORE appending, so a callback racing the append is
@@ -79,12 +91,13 @@ namespace pa
 		auto& listeners = a_proxy->listeners;
 		for (std::int32_t i = 0; i < listeners.size(); ++i) {
 			if (listeners[i] == this) {
-				return;  // already present: a re-attach must not double-register
+				return true;  // already present: a re-attach must not double-register
 			}
 		}
 		listeners.push_back(this);
 		logger::info("listener attached to player proxy 0x{:X} (listeners now {})",
 			reinterpret_cast<std::uintptr_t>(a_proxy), listeners.size());
+		return true;
 	}
 
 	void PushListener::Detach()

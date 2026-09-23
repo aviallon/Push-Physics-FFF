@@ -122,7 +122,7 @@ src/
   HkMath.h                hkVector4 <-> math::Vec3 helpers
   PhysicsMath.{h,cpp}     PURE push-model maths (direction, mu, heavy gate, caps,
                           cooldown/take-max, expiry, gate refusals) - Linux-tested
-  ProxyAccess.{h,cpp}     AsProxyController / ControllerOf / PlayerProxy
+  ProxyAccess.{h,cpp}     AsProxyController / PlayerController / PlayerProxy
   ProxyRegistry.{h,cpp}   main-thread actor<->proxy snapshot behind a seqlock
   PushRegistry.{h,cpp}    per-target push buffer (fixed table, spinlocked)
   StaggerQueue.{h,cpp}    SPSC ring: callback queues a stagger, main thread drains

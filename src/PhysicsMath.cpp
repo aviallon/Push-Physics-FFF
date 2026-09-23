@@ -232,4 +232,50 @@ namespace pa::math
 		}
 		return GateRefusal::kNone;
 	}
+
+	float PhysicalSkill01(const StrengthInputs& a_in)
+	{
+		const float totalWeight = a_in.weightOneHanded + a_in.weightTwoHanded +
+			a_in.weightBlock + a_in.weightHeavyArmor + a_in.weightArchery;
+		if (!(totalWeight > 0.0f)) {
+			return 0.0f;
+		}
+		const auto skill01 = [](float a_value) {
+			return std::clamp(a_value / 100.0f, 0.0f, 1.0f);
+		};
+		const float weighted =
+			skill01(a_in.oneHanded) * a_in.weightOneHanded +
+			skill01(a_in.twoHanded) * a_in.weightTwoHanded +
+			skill01(a_in.block) * a_in.weightBlock +
+			skill01(a_in.heavyArmor) * a_in.weightHeavyArmor +
+			skill01(a_in.archery) * a_in.weightArchery;
+		return std::clamp(weighted / totalWeight, 0.0f, 1.0f);
+	}
+
+	float DeriveCharacterStrength(const StrengthInputs& a_in)
+	{
+		const float massRatio = a_in.referenceMass > 0.0f ? a_in.raceBaseMass / a_in.referenceMass : 1.0f;
+		const float raw = a_in.base * StrengthPower(a_in) * massRatio;
+		const float lo = std::min(a_in.minStrength, a_in.maxStrength);
+		const float hi = std::max(a_in.minStrength, a_in.maxStrength);
+		return std::clamp(raw, lo, hi);
+	}
+
+	float StrengthPower(const StrengthInputs& a_in)
+	{
+		const float levelFactor = 1.0f + a_in.levelGain * std::max(0.0f, a_in.level - 1.0f);
+		const float skillFactor = 1.0f + a_in.skillGain * PhysicalSkill01(a_in);
+		const float referenceFactor = 1.0f + a_in.skillGain * a_in.referenceSkill;
+		return referenceFactor > 0.0f ? (levelFactor * skillFactor) / referenceFactor : 0.0f;
+	}
+
+	float EffectivePlayerMass(float a_baseMass, float a_power, float a_exponent)
+	{
+		return a_baseMass * std::pow(std::max(a_power, 1e-3f), a_exponent);
+	}
+
+	float ResolveCharacterStrength(float a_override, const StrengthInputs& a_in)
+	{
+		return a_override >= 0.0f ? a_override : DeriveCharacterStrength(a_in);
+	}
 }

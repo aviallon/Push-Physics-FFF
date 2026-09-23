@@ -155,4 +155,63 @@ namespace pa::math
 
 	// Boolean-state gates 1/10/11/12/13/15/18/19, evaluated before any physics.
 	[[nodiscard]] GateRefusal EvaluateGates(const GateInputs& a_in);
+
+	// --- character-strength derivation (Approach A) ---------------------------
+	//
+	// Havok's own CharacterInteractionDemo sets cpci.m_characterStrength = 5000
+	// ("how much the character is able to push other objects around"); Havok's
+	// default is HK_REAL_MAX and Skyrim never sets it (measured FLT_MAX in game),
+	// so there is no game-authoritative value. 5000 is the base and the value is
+	// derived from the player's race mass, level and physical skills.
+	//
+	// All inputs are plain floats so the derivation is unit-tested off-game.
+	struct StrengthInputs
+	{
+		float raceBaseMass = 80.0f;       // TESRace::data.baseMass (inline field)
+		float referenceMass = 80.0f;      // fStrengthReferenceMass
+		float level = 1.0f;               // Actor level, >= 1
+		float oneHanded = 0.0f;           // raw actor values, 0..100 (may exceed)
+		float twoHanded = 0.0f;
+		float block = 0.0f;
+		float heavyArmor = 0.0f;
+		float archery = 0.0f;
+		float weightOneHanded = 0.30f;
+		float weightTwoHanded = 0.25f;
+		float weightBlock = 0.20f;
+		float weightHeavyArmor = 0.15f;
+		float weightArchery = 0.10f;
+		float levelGain = 0.05f;           // fStrengthLevelGain
+		float skillGain = 1.371f;          // fStrengthSkillGain
+		float referenceSkill = 0.15f;      // P is normalised to 1 here
+		float base = 5000.0f;             // fStrengthBase
+		float minStrength = 500.0f;       // fStrengthMin
+		float maxStrength = 200000.0f;    // fStrengthMax
+
+		// Diagnostics only; DeriveCharacterStrength ignores it.
+		std::uint32_t raceFormID = 0;
+	};
+
+	// Weighted mean of the physical skills, each as actorValue/100 clamped to
+	// [0,1], normalised by the weight sum. Returns 0 when the weights are all 0.
+	[[nodiscard]] float PhysicalSkill01(const StrengthInputs& a_in);
+
+	// Power index P, normalised so P(L1, skill01 = referenceSkill) = 1:
+	//   P = (1 + levelGain * max(0, level - 1)) * (1 + skillGain * skill01)
+	//       / (1 + skillGain * referenceSkill)
+	// The fitted anchors (fStrengthBase = 5000, fStrengthLevelGain = 0.05,
+	// fStrengthSkillGain = 1.371, referenceSkill = 0.15) are
+	// L1/0.15 -> 1, L50/0.80 -> 6, L252/1.00 -> ~26.65.
+	[[nodiscard]] float StrengthPower(const StrengthInputs& a_in);
+
+	// characterStrength = base * P * (raceBaseMass / referenceMass), clamped to
+	// [minStrength, maxStrength].
+	[[nodiscard]] float DeriveCharacterStrength(const StrengthInputs& a_in);
+
+	// fPlayerMass * P^fMassPowerExponent: the mass the player *contests* with.
+	// 100 at base, ~350 at L50/skill0.80, ~1000 at max.
+	[[nodiscard]] float EffectivePlayerMass(float a_baseMass, float a_power, float a_exponent);
+
+	// fCharacterStrength semantics: >= 0 is an explicit override used verbatim;
+	// < 0 derives. It can never return the -1 sentinel.
+	[[nodiscard]] float ResolveCharacterStrength(float a_override, const StrengthInputs& a_in);
 }
