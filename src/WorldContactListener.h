@@ -37,17 +37,41 @@ namespace pa
 			std::uint64_t pcObject = 0;        // player <-> non-actor object (userData != null)
 			std::uint64_t actorActor = 0;      // actor <-> actor (neither is the player)
 			std::uint64_t other = 0;           // anything with a null userData
-			std::uint64_t logged = 0;          // bounded diagnostic lines emitted
+
+			// Phantom-collidable control. NOTE THE ASYMMETRY: hkpCollisionEvent::bodies
+			// is typed hkpRigidBody*[2] and a phantom is not a rigid body, so this
+			// being NON-ZERO would prove that character phantoms do reach this channel,
+			// while ZERO proves nothing at all (the channel may be rigid-body-only by
+			// construction). It is kept because a single non-zero is decisive, never as
+			// the basis for reading a zero.
+			std::uint64_t bodyPhantom = 0;
+			std::uint64_t bodyPhantomPlayer = 0;
+			// Player identity by collision group (CFilter bits 16-31). Vacuous when
+			// the phantom's group is 0, which is warned about once.
+			std::uint64_t pcGroup = 0;
+			// Superset tag, explicitly NOT a player signal: "exactly one side
+			// unidentified, the other side an actor" also fires for every NPC-vs-world
+			// pair. Kept only to show that bucket is large.
+			std::uint64_t nullVsActor = 0;
+			std::uint64_t logged = 0;  // bounded diagnostic lines emitted
 		};
 
 		[[nodiscard]] Stats Snapshot() const;
 
 	private:
+		// Shared budget for the bounded diagnostics, so the two callbacks cannot
+		// double the log volume.
+		[[nodiscard]] bool TryClaimLogSlot();
+
 		std::atomic<std::uint64_t> collisionAdded_{ 0 };
 		std::atomic<std::uint64_t> pcActor_{ 0 };
 		std::atomic<std::uint64_t> pcObject_{ 0 };
 		std::atomic<std::uint64_t> actorActor_{ 0 };
 		std::atomic<std::uint64_t> other_{ 0 };
+		std::atomic<std::uint64_t> bodyPhantom_{ 0 };
+		std::atomic<std::uint64_t> bodyPhantomPlayer_{ 0 };
+		std::atomic<std::uint64_t> pcGroup_{ 0 };
+		std::atomic<std::uint64_t> nullVsActor_{ 0 };
 		std::atomic<std::uint64_t> logged_{ 0 };
 		std::atomic<std::uint64_t> lastLogMs_{ 0 };
 	};
@@ -60,4 +84,20 @@ namespace pa
 
 	// Main thread, kPreLoadGame: forget the last world so a reload re-registers.
 	void ResetWorldContactRegistration();
+
+	// Main thread, idempotent, cheap. Records the player's collision group (from the
+	// registry's trusted controller -> char proxy -> shape phantom path) so the
+	// callback can tag bodies by group, and reports once whether the ENGINE's
+	// collidable->refr map resolves the player's phantom: hkpWorldObject::
+	// GetUserData() is TESHavokUtilities::FindCollidableRef, an engine lookup, so a
+	// null userData does NOT prove the body is not the player's.
+	void EnsurePlayerBodyIdentity();
+
+	// Main thread. Reads the engine's OWN record of the last bump
+	// (bhkCharacterController::bumpedBody / bumpedCharCollisionObject, plain fields
+	// at +0x2C0/+0x2C8) and logs it when it changes. No hook, no vtable call: this
+	// is the channel the character solver itself populates, and
+	// bumpedCharCollisionObject is specifically the character collision object the
+	// controller bumped.
+	void ProbePlayerBumpRecord();
 }

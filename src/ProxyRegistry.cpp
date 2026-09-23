@@ -385,6 +385,8 @@ namespace pa
 			// handler never has to touch the world.
 			PushManagerMainThreadTick();
 			PushModel::TickMainThread(static_cast<float>(dtMs) / 1000.0f);
+			EnsurePlayerBodyIdentity();
+			ProbePlayerBumpRecord();
 			EnsureWorldContactRegistration();
 		}
 
@@ -403,10 +405,12 @@ namespace pa
 				auto* listener = GetPushListener();
 				const auto contact = GetWorldContactListener().Snapshot();
 				logger::info("listener stats: character={} object={} constraints={} orphans={} pairs={} "
-							 "contactAdded={} pcActor={} pcObject={} actorActor={} contactOther={}",
+							 "contactAdded={} pcActor={} pcObject={} actorActor={} contactOther={} "
+							 "bodyPhantom={} bodyPhantomPlayer={} pcGroup={} nullVsActor={}",
 					listener->CharacterCalls(), listener->ObjectCalls(),
 					listener->ConstraintCalls(), OrphanCallCount(), PushModel::PairCount(),
-					contact.collisionAdded, contact.pcActor, contact.pcObject, contact.actorActor, contact.other);
+					contact.collisionAdded, contact.pcActor, contact.pcObject, contact.actorActor, contact.other,
+					contact.bodyPhantom, contact.bodyPhantomPlayer, contact.pcGroup, contact.nullVsActor);
 			}
 		}
 	}
