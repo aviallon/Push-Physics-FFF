@@ -22,7 +22,7 @@ scan).
 | `Health` | `Degrade` (rare) | any thread | atomics + mutex |
 | Havok proxy `velocity` writes in `OnCharacterContact` | read/write | physics callback thread, i.e. where Havok itself mutates | intended physics mutation, not a shared-structure race |
 
-`PushModel::ApplyProxyTuning` is **not** reachable from a callback: it runs on
+| `PushModel::ApplyProxyTuning` is **not** reachable from a callback: it runs on
 the main thread at attach / re-attach / config change. It writes
 `hkpCharacterProxy::characterStrength`/`characterMass` (aligned 32-bit floats)
 that the physics thread may read. This is left in place and documented: on
@@ -30,6 +30,26 @@ x86-64 the stores are single-word and never tear, so the worst case is one
 physics step using the previous value, and the alternative (deferring the write
 into the physics callback) cannot be done without a new detour. No other
 non-atomic mutable state is touched by both the callback and the main thread.
+
+## World contact listener (instrumentation, added on main's request)
+
+`WorldContactListener` (`src/WorldContactListener.{h,cpp}`) is registered on the
+player's `hkpWorld` and runs on the physics thread. Its counters
+(`collisionAdded_`, `pcActor_`, `pcObject_`, `actorActor_`, `other_`, `logged_`,
+`lastLogMs_`) are all `std::atomic<uint64_t>`; the `WorldContactListener` object
+itself is a static with no mutable non-atomic state. The bounded diagnostic is
+emitted at most 20 times per session / once per 5 s, so the hot path never
+allocates; `lastLogMs_`/`logged_` gate it with relaxed atomics. `g_lastWorld`
+(registration cache) is touched on the main thread only. The listener reads no
+PushAside shared structure other than config-free constants, so nothing else is
+reachable from it.
+
+Registration takes `bhkWorld::worldLock` via `BSWriteLockGuard` and calls the
+RE'd `hkpCollisionCallbackUtil_requireCollisionCallbackUtil` /
+`hkpWorld_addContactListener` (`src/Hooks/HavokUtil.{h,cpp}`), each null-guarded
+with a one-shot error log. They are deliberately **not** in
+`Hooks/HookTargets.def`/the committed table, because that table needs a prologue
+hash generated from `SkyrimSE.exe` and no game binary is available in CI.
 
 ## Changes made
 

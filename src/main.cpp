@@ -8,6 +8,7 @@
 #include "PushManager.h"
 #include "PushModel.h"
 #include "PushRegistry.h"
+#include "WorldContactListener.h"
 
 namespace
 {
@@ -42,6 +43,7 @@ namespace
 			pa::DetachPushListener();
 			pa::PushRegistry::Get().Clear();
 			pa::ProxyRegistry::Get().Invalidate();
+			pa::ResetWorldContactRegistration();
 			break;
 		default:
 			break;

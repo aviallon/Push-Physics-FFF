@@ -8,6 +8,7 @@
 #include "PushListener.h"
 #include "PushManager.h"
 #include "PushModel.h"
+#include "WorldContactListener.h"
 
 #include <RE/A/Actor.h>
 #include <RE/A/ActorState.h>
@@ -384,6 +385,7 @@ namespace pa
 			// handler never has to touch the world.
 			PushManagerMainThreadTick();
 			PushModel::TickMainThread(static_cast<float>(dtMs) / 1000.0f);
+			EnsureWorldContactRegistration();
 		}
 
 		// Instrumentation (design §7 step 3). Whether Havok dispatches the
@@ -399,9 +401,12 @@ namespace pa
 			if (g_lastStatsMs == 0 || now - g_lastStatsMs >= statsMs) {
 				g_lastStatsMs = now;
 				auto* listener = GetPushListener();
-				logger::info("listener stats: character={} object={} constraints={} orphans={} pairs={}",
+				const auto contact = GetWorldContactListener().Snapshot();
+				logger::info("listener stats: character={} object={} constraints={} orphans={} pairs={} "
+							 "contactAdded={} pcActor={} pcObject={} actorActor={} contactOther={}",
 					listener->CharacterCalls(), listener->ObjectCalls(),
-					listener->ConstraintCalls(), OrphanCallCount(), PushModel::PairCount());
+					listener->ConstraintCalls(), OrphanCallCount(), PushModel::PairCount(),
+					contact.collisionAdded, contact.pcActor, contact.pcObject, contact.actorActor, contact.other);
 			}
 		}
 	}
