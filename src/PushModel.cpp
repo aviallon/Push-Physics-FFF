@@ -10,6 +10,7 @@
 #include "PushRegistry.h"
 #include "StaggerQueue.h"
 #include "Health.h"
+#include "LiveConfig.h"
 
 #include <RE/A/Actor.h>
 #include <RE/T/TESRace.h>
@@ -62,7 +63,7 @@ namespace pa
 				g_budgetFrame.store(frame, std::memory_order_relaxed);
 				g_budgetCount.store(0, std::memory_order_relaxed);
 			}
-			return g_budgetCount.fetch_add(1, std::memory_order_relaxed) >= Config::Get().maxInteractionsPerFrame;
+			return g_budgetCount.fetch_add(1, std::memory_order_relaxed) >= LiveConfig::Snapshot().maxInteractionsPerFrame;
 		}
 
 		[[nodiscard]] bool DebugLineAllowed()
@@ -72,7 +73,7 @@ namespace pa
 				g_debugWindowMs.store(now, std::memory_order_relaxed);
 				g_debugCount.store(0, std::memory_order_relaxed);
 			}
-			return g_debugCount.fetch_add(1, std::memory_order_relaxed) < Config::Get().debugLogMaxPerSec;
+			return g_debugCount.fetch_add(1, std::memory_order_relaxed) < LiveConfig::Snapshot().debugLogMaxPerSec;
 		}
 
 		[[nodiscard]] math::Vec3 PhantomPosition(const RE::hkpCharacterProxy* a_proxy)
@@ -86,7 +87,7 @@ namespace pa
 		[[nodiscard]] float EffectivePlayerMass()
 		{
 			const float mass = g_effectivePlayerMass.load(std::memory_order_relaxed);
-			return mass > 0.0f ? mass : Config::Get().playerMass;
+			return mass > 0.0f ? mass : LiveConfig::Snapshot().playerMass;
 		}
 
 		// "Unknown target" diagnostics: design gate 16 pushes an unregistered
@@ -99,7 +100,7 @@ namespace pa
 
 		void NoteUnknownTargetOnce(RE::hkpCharacterProxy* a_proxy)
 		{
-			if (!a_proxy || !Config::Get().debugLog) {
+			if (!a_proxy || !LiveConfig::Snapshot().debugLog) {
 				return;
 			}
 			for (const auto& slot : g_unknownTargets) {
@@ -159,7 +160,7 @@ namespace pa
 		void ProbeManifold(const RE::hkpCharacterProxy* a_self,
 			const RE::hkArray<RE::hkpRootCdPoint>& a_manifold)
 		{
-			if (!Config::Get().debugLog) {
+			if (!LiveConfig::Snapshot().debugLog) {
 				return;
 			}
 			if (g_probeLines.load(std::memory_order_relaxed) >= kProbeLines) {
@@ -305,6 +306,12 @@ namespace pa
 		return g_callbackThreadId.load(std::memory_order_relaxed);
 	}
 
+	float PushModel::PlayerEffectiveMass()
+	{
+		const float mass = g_effectivePlayerMass.load(std::memory_order_relaxed);
+		return mass > 0.0f ? mass : Config::Get().playerMass;
+	}
+
 	void PushModel::OnCharacterContact(RE::hkpCharacterProxy* a_self,
 		RE::hkpCharacterProxy* a_other,
 		const RE::hkContactPoint* a_contact)
@@ -315,7 +322,7 @@ namespace pa
 
 		NoteCallbackThread();
 
-		const auto& cfg = Config::Get();
+		const Config cfg = LiveConfig::Snapshot();
 		auto&       proxies = ProxyRegistry::Get();
 		auto&       buffers = PushRegistry::Get();
 
@@ -428,7 +435,7 @@ namespace pa
 		RE::hkpCharacterObjectInteractionResult* a_output)
 	{
 		(void)a_self;
-		const auto& cfg = Config::Get();
+		const Config cfg = LiveConfig::Snapshot();
 		if (!cfg.useObjectInteraction || !a_input || !a_output) {
 			return;
 		}
@@ -517,7 +524,7 @@ namespace pa
 			if (NotePairSeen(a_other)) {
 				ProxyEntry     info{};
 				const bool     known = proxies.Lookup(a_other, info);
-				const auto&    cfg = Config::Get();
+				const Config   cfg = LiveConfig::Snapshot();
 				if (cfg.debugLog && DebugLineAllowed()) {
 					logger::info("manifold scan: new target proxy 0x{:X} known={} mass={:.1f} actor=0x{:X} pairs={}",
 						reinterpret_cast<std::uintptr_t>(a_other), known, info.mass,

@@ -1,5 +1,12 @@
 #pragma once
 
+// MSVC marks fopen/strcpy/... deprecated in favour of *_s. The plugin targets
+// MSVC/clang-cl only and uses the portable CRT calls deliberately, so silence
+// the deprecation before any CRT header is pulled in.
+#ifndef _CRT_SECURE_NO_WARNINGS
+#	define _CRT_SECURE_NO_WARNINGS
+#endif
+
 #ifndef WIN32_LEAN_AND_MEAN
 #	define WIN32_LEAN_AND_MEAN
 #endif

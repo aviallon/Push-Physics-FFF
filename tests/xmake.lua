@@ -40,6 +40,12 @@ target("pushaside-tests")
     -- dependency), so the same gates and buffer rules that run in-game are
     -- asserted here on Linux.
     add_files("../src/PhysicsMath.cpp")
+    -- The command parser, the live-config override table and the trace row
+    -- formatter are pure C++ too: the accepted/rejected command grammar and the
+    -- exact CSV shape are asserted here rather than only in-game.
+    add_files("../src/CommandParse.cpp")
+    add_files("../src/LiveConfig.cpp")
+    add_files("../src/TraceFormat.cpp")
     add_includedirs("..", "../src", ".")
 
     if is_plat("linux") or is_plat("macosx") then

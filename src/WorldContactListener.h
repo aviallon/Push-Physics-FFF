@@ -7,7 +7,11 @@
 
 namespace RE
 {
+	class Actor;
+	class bhkCharacterController;
 	class hkpCharacterProxy;
+	class hkpRigidBody;
+	class TESObjectREFR;
 }
 
 // A process-lifetime hkpContactListener registered on the player's Havok world,
@@ -136,6 +140,20 @@ namespace pa
 	// the first occurrence is latched so the main thread can log it once with the
 	// target's actor formID/name (which must not be resolved off-thread).
 	void NoteBumpPushApplied(RE::hkpCharacterProxy* a_target, float a_dv);
+
+	// Main thread: the engine's current bump record, resolved along the full
+	// chain (charBody -> refr -> Actor -> controller -> proxy). Names are NOT
+	// resolved here; the caller has the Actor*. Used by the `bump` command.
+	struct BumpRecordView
+	{
+		RE::hkpRigidBody*           charBody = nullptr;
+		RE::TESObjectREFR*          refr = nullptr;
+		RE::Actor*                  actor = nullptr;
+		RE::bhkCharacterController* ctrl = nullptr;
+		RE::hkpCharacterProxy*      target = nullptr;
+		float                       force = 0.0f;
+	};
+	[[nodiscard]] BumpRecordView ReadBumpRecord();
 
 	// Distinct target proxies bump-record detection has resolved this session, and
 	// pushes actually applied through this path. Main thread (stats line).

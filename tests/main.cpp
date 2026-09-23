@@ -17,7 +17,10 @@
 #include "Hooks/HookTargets.h"
 #include "Hooks/HookVerifier.h"
 #include "BumpSlot.h"
+#include "CommandParse.h"
+#include "LiveConfig.h"
 #include "PhysicsMath.h"
+#include "TraceFormat.h"
 
 #include <cmath>
 
@@ -391,6 +394,193 @@ int main()
 		slot.Clear();
 		Check(slot.Peek() == nullptr, "Clear() empties the slot");
 		Check(!pa::TakeForApply(slot, out) && out == nullptr, "a cleared slot does not apply");
+	}
+
+	// --- command-channel parser (src/CommandParse.h) --------------------------
+	// The command file is the only input channel; a line that parses wrongly is a
+	// command that silently does nothing, so every accepted and rejected form is
+	// pinned here.
+	{
+		using pa::CommandKind;
+		using pa::TraceAction;
+
+		Check(pa::ParseCommandLine("  help  ").kind == CommandKind::kHelp, "help parses");
+		Check(pa::ParseCommandLine("help").valid, "help is valid");
+		Check(pa::ParseCommandLine("# a comment").kind == CommandKind::kNone, "a comment is ignored");
+		Check(pa::ParseCommandLine("   ").kind == CommandKind::kNone, "a blank line is ignored");
+		Check(pa::ParseCommandLine("\t\r").kind == CommandKind::kNone, "whitespace/CR is ignored");
+		Check(pa::ParseCommandLine("status").kind == CommandKind::kStatus, "status parses");
+		Check(pa::ParseCommandLine("registry").kind == CommandKind::kRegistry, "registry parses");
+		Check(pa::ParseCommandLine("bump").kind == CommandKind::kBump, "bump parses");
+		Check(pa::ParseCommandLine("vtables").kind == CommandKind::kVtables, "vtables parses");
+		Check(pa::ParseCommandLine("actors").kind == CommandKind::kActors, "actors parses");
+		Check(pa::ParseCommandLine("HELP").kind == CommandKind::kHelp, "commands are case-insensitive");
+
+		const auto unknown = pa::ParseCommandLine("bogus");
+		Check(unknown.kind == CommandKind::kUnknown && !unknown.valid, "an unknown command is rejected");
+
+		const auto watch = pa::ParseCommandLine("watch 0x0001A2B3");
+		Check(watch.kind == CommandKind::kWatch && watch.valid && watch.formId == 0x0001A2B3,
+			"watch takes a hex formID");
+		Check(!pa::ParseCommandLine("watch").valid, "watch without a formID is malformed");
+		Check(!pa::ParseCommandLine("watch zzz").valid, "watch with a non-number is malformed");
+		Check(pa::ParseCommandLine("unwatch").kind == CommandKind::kUnwatch, "unwatch parses");
+
+		const auto on = pa::ParseCommandLine("trace on");
+		Check(on.kind == CommandKind::kTrace && on.traceAction == TraceAction::kOn, "trace on parses");
+		Check(pa::ParseCommandLine("trace off").traceAction == TraceAction::kOff, "trace off parses");
+		Check(pa::ParseCommandLine("trace status").traceAction == TraceAction::kStatus, "trace status parses");
+		Check(pa::ParseCommandLine("trace").traceAction == TraceAction::kStatus, "bare trace is status");
+		const auto every = pa::ParseCommandLine("trace every 5");
+		Check(every.traceAction == TraceAction::kEvery && every.every == 5, "trace every <n> parses");
+		Check(!pa::ParseCommandLine("trace every 0").valid, "trace every 0 is rejected");
+		Check(!pa::ParseCommandLine("trace every").valid, "trace every without n is rejected");
+		Check(!pa::ParseCommandLine("trace sideways").valid, "trace with a bad action is rejected");
+
+		const auto set = pa::ParseCommandLine("set Physics:fPushScale 2.5");
+		Check(set.kind == CommandKind::kSet && set.valid && set.arg1 == "Physics:fPushScale" && set.arg2 == "2.5",
+			"set takes <Section>:<Key> and a value");
+		Check(pa::ParseCommandLine("set").kind == CommandKind::kSet && pa::ParseCommandLine("set").valid,
+			"bare set is valid (lists the keys)");
+		Check(!pa::ParseCommandLine("set Physics:fPushScale").valid, "set without a value is malformed");
+
+		const auto push = pa::ParseCommandLine("push 0x14 250 rb");
+		Check(push.kind == CommandKind::kPush && push.valid && push.formId == 0x14 &&
+				std::fabs(push.dv - 250.0f) < 1e-3f && push.mode == pa::PushMode::kRb,
+			"push takes formID, dv and mode");
+		Check(pa::ParseCommandLine("push 0x14 250").mode == pa::PushMode::kBoth, "push defaults to both");
+		Check(!pa::ParseCommandLine("push 0x14").valid, "push without dv is malformed");
+		Check(!pa::ParseCommandLine("push 0x14 250 sideways").valid, "push with a bad mode is malformed");
+		Check(!pa::ParseCommandLine("push zzz 250").valid, "push with a bad formID is malformed");
+
+		const auto here = pa::ParseCommandLine("pushhere");
+		Check(here.kind == CommandKind::kPushHere && here.valid && here.dv > 0.0f,
+			"pushhere with no arguments gets a default dv");
+		Check(pa::ParseCommandLine("pushhere 300").dv == 300.0f, "pushhere takes a dv");
+		Check(pa::ParseCommandLine("pushhere ctrl").mode == pa::PushMode::kCtrl, "pushhere takes a mode");
+		Check(pa::ParseCommandLine("pushhere 300 both").mode == pa::PushMode::kBoth,
+			"pushhere takes dv and mode");
+		Check(!pa::ParseCommandLine("pushhere zzz").valid, "pushhere with garbage is malformed");
+
+		std::uint32_t id = 0;
+		Check(pa::ParseFormId("0x14", id) && id == 20, "ParseFormId reads hex");
+		Check(pa::ParseFormId("20", id) && id == 20, "ParseFormId reads decimal");
+		Check(pa::ParseFormId("010", id) && id == 10, "ParseFormId does not read a leading zero as octal");
+		Check(!pa::ParseFormId("0x", id), "ParseFormId rejects a bare 0x");
+		Check(!pa::ParseFormId("", id), "ParseFormId rejects an empty string");
+
+		Check(std::strcmp(pa::PushModeName(pa::PushMode::kCtrl), "ctrl") == 0, "PushModeName ctrl");
+		Check(std::strcmp(pa::PushModeName(pa::PushMode::kRb), "rb") == 0, "PushModeName rb");
+		Check(std::strcmp(pa::PushModeName(pa::PushMode::kBoth), "both") == 0, "PushModeName both");
+		Check(std::strcmp(pa::PushMechanismName(0), "none") == 0, "PushMechanismName none");
+		Check(std::strcmp(pa::PushMechanismName(3), "both") == 0, "PushMechanismName both");
+		Check(std::strcmp(pa::PushMechanismName(2), "rb") == 0, "PushMechanismName rb");
+	}
+
+	// --- live-config override (src/LiveConfig.h) ------------------------------
+	{
+		pa::Config  config;
+		std::string out;
+
+		Check(pa::LiveConfig::ParseSet("Listener:bUseBumpDetection", "0", config, out) && !config.useBumpDetection,
+			"ParseSet applies a bool");
+		Check(out == "Listener:bUseBumpDetection=0", "ParseSet normalises the result line");
+		Check(pa::LiveConfig::ParseSet("General:bEnabled", "false", config, out) && !config.enabled,
+			"General is a wildcard section");
+		Check(pa::LiveConfig::ParseSet("Physics:fPushScale", "2.5", config, out) &&
+				std::fabs(config.pushScale - 2.5f) < 1e-6f,
+			"ParseSet applies a float");
+		Check(pa::LiveConfig::ParseSet("General:fPushScale", "3", config, out) &&
+				std::fabs(config.pushScale - 3.0f) < 1e-6f,
+			"General:fPushScale resolves to the Physics key");
+		Check(pa::LiveConfig::ParseSet("Budget:uMaxInteractionsPerFrame", "64", config, out) &&
+				config.maxInteractionsPerFrame == 64,
+			"ParseSet applies a uint");
+		Check(pa::LiveConfig::ParseSet("Diagnostics:bTrace", "1", config, out) && config.trace,
+			"bTrace is a live-settable key");
+
+		Check(!pa::LiveConfig::ParseSet("Physics:bUseBumpDetection", "1", config, out),
+			"a key in the wrong section is rejected");
+		Check(!pa::LiveConfig::ParseSet("Nope:nope", "1", config, out), "an unknown key is rejected");
+		Check(!pa::LiveConfig::ParseSet("Listener:bUseBumpDetection", "maybe", config, out),
+			"a malformed bool is rejected");
+		Check(!pa::LiveConfig::ParseSet("Physics:fPushScale", "abc", config, out),
+			"a malformed float is rejected");
+		Check(!pa::LiveConfig::ParseSet("Budget:uMaxInteractionsPerFrame", "-1", config, out),
+			"a negative uint is rejected");
+		const float before = config.pushScale;
+		Check(!pa::LiveConfig::ParseSet("Physics:fPushScale", "abc", config, out) && config.pushScale == before,
+			"a failed parse leaves the value unchanged");
+		Check(pa::LiveConfig::SupportedKeys().find("Listener:bUseBumpDetection") != std::string::npos,
+			"SupportedKeys lists the documented keys");
+
+		// The seqlock snapshot the physics callback reads.
+		pa::Config published;
+		published.pushScale = 7.25f;
+		published.enabled = false;
+		published.maxInteractionsPerFrame = 7;
+		pa::LiveConfig::Publish(published);
+		const auto snapshot = pa::LiveConfig::Snapshot();
+		Check(std::fabs(snapshot.pushScale - 7.25f) < 1e-6f, "Publish/Snapshot round-trips a float");
+		Check(!snapshot.enabled, "Publish/Snapshot round-trips a bool");
+		Check(snapshot.maxInteractionsPerFrame == 7, "Publish/Snapshot round-trips a uint");
+		pa::Config second = published;
+		second.pushScale = 1.0f;
+		pa::LiveConfig::Publish(second);
+		Check(std::fabs(pa::LiveConfig::Snapshot().pushScale - 1.0f) < 1e-6f, "a later publish wins");
+	}
+
+	// --- trace row format (src/TraceFormat.h) ---------------------------------
+	{
+		const auto countColumns = [](std::string_view a_line) {
+			std::size_t columns = 1;
+			for (const char c : a_line) {
+				if (c == ',') {
+					++columns;
+				}
+			}
+			return columns;
+		};
+
+		const std::string_view header{ pa::TraceHeader() };
+		Check(!header.empty() && header.back() == '\n', "the trace header ends with a newline");
+		Check(countColumns(header.substr(0, header.size() - 1)) == 51, "the trace header has 51 columns");
+		Check(std::strstr(pa::TraceHeader(), "player_proxy") != nullptr, "the header names the player proxy");
+		Check(std::strstr(pa::TraceHeader(), "push_mech") != nullptr, "the header names the push mechanism");
+		Check(std::strstr(pa::TraceHeader(), "watch_ctrl_vx") != nullptr, "the header names the watched actor");
+		Check(!std::string_view{ pa::TraceLegend() }.empty(), "a legend is available");
+
+		pa::TraceSample sample;
+		sample.frame = 12345;
+		sample.ms = 678.5;
+		sample.playerProxy = 0xABCDEF;
+		sample.playerPos[0] = 1.0f;
+		sample.playerPos[1] = 2.0f;
+		sample.playerPos[2] = 3.0f;
+		sample.bumpRbMotion = 4;
+		sample.pushMode = 3;
+		sample.pushMech = 3;
+		sample.pushChanged = 1;
+		sample.watchForm = 0x0001A2B3;
+
+		char      buffer[2048]{};
+		const int n = pa::FormatTraceRow(sample, buffer, sizeof(buffer));
+		Check(n > 0 && static_cast<std::size_t>(n) < sizeof(buffer), "a trace row fits the stack buffer");
+		Check(static_cast<std::size_t>(n) == std::strlen(buffer), "the reported row length matches the text");
+		Check(std::string_view{ buffer, static_cast<std::size_t>(n - 1) }.rfind("12345,", 0) == 0,
+			"the row starts with the frame number");
+		Check(countColumns(std::string_view{ buffer, static_cast<std::size_t>(n - 1) }) == 51,
+			"a trace row has the same 51 columns as the header");
+		Check(std::string_view{ buffer }.find("ABCDEF") != std::string_view::npos,
+			"the player proxy pointer is written in hex");
+
+		char      tiny[8]{};
+		const int truncated = pa::FormatTraceRow(sample, tiny, sizeof(tiny));
+		Check(truncated >= static_cast<int>(sizeof(tiny)), "a too-small buffer reports truncation");
+
+		char      comment[64]{};
+		const int cn = pa::FormatTraceComment("hello", comment, sizeof(comment));
+		Check(cn > 0 && std::strcmp(comment, "# hello\n") == 0, "a comment line is formatted");
 	}
 
 	std::printf("%d check(s) run, %d failure(s)\n", g_checks, g_failures);

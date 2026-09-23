@@ -5,8 +5,10 @@
 #include "Config.h"
 #include "Health.h"
 #include "HkMath.h"
+#include "LiveConfig.h"
 #include "ProxyAccess.h"
 #include "PushModel.h"
+#include "PushRequest.h"
 #include "WorldContactListener.h"
 
 #include <RE/H/hkpCharacterProxy.h>
@@ -122,6 +124,13 @@ namespace pa
 			return;  // not attached yet: nothing we can vouch for
 		}
 
+		// The `push` command's application path. The request was resolved on the
+		// main thread; the write happens here, inside the physics step, so it does
+		// not race the step. Deliberately before the manifold ABI invariant: an
+		// explicit push does not depend on the manifold, and this is the mechanism
+		// the command channel exists to test.
+		ApplyPendingPushRequest();
+
 		auto& invariant = GetInvariant();
 		if (invariant.Disabled()) {
 			return;
@@ -133,7 +142,8 @@ namespace pa
 			return;  // never dereference what we cannot vouch for
 		}
 
-		if (Config::Get().useBumpDetection) {
+		const Config cfg = LiveConfig::Snapshot();
+		if (cfg.useBumpDetection) {
 			// Path-1 primary detection, delivered by the main thread: consume the
 			// single pending target (exchange-clear, so it is applied at most once and
 			// never a null). A nullptr contact makes ComputePushDirection fall back to
@@ -155,7 +165,7 @@ namespace pa
 			}
 		}
 
-		if (Config::Get().useManifoldScan) {
+		if (cfg.useManifoldScan) {
 			PushModel::ScanManifold(const_cast<RE::hkpCharacterProxy*>(a_proxy), a_manifold);
 		}
 	}
@@ -180,7 +190,7 @@ namespace pa
 			return;
 		}
 		characterCalls_.fetch_add(1, std::memory_order_relaxed);
-		if (!Config::Get().useCharacterInteraction) {
+		if (!LiveConfig::Snapshot().useCharacterInteraction) {
 			return;
 		}
 		PushModel::OnCharacterContact(a_proxy, a_otherProxy, &a_contact);
@@ -193,7 +203,7 @@ namespace pa
 			return;
 		}
 		objectCalls_.fetch_add(1, std::memory_order_relaxed);
-		if (!Config::Get().useObjectInteraction) {
+		if (!LiveConfig::Snapshot().useObjectInteraction) {
 			return;
 		}
 		PushModel::OnObjectContact(a_proxy, &a_input, &a_output);

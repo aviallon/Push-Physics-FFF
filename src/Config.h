@@ -10,6 +10,12 @@ namespace pa
 	// module handle rather than from the current working directory.
 	[[nodiscard]] const std::filesystem::path& PluginDir();
 
+	// Directory SKSE writes PushAside.log to (Documents/My Games/Skyrim Special
+	// Edition/SKSE). This is where the instrumentation side channel's
+	// PushAside.cmd / PushAside.out / PushAside.trace live. Falls back to
+	// PluginDir() if SKSE's known-folder lookup fails.
+	[[nodiscard]] const std::filesystem::path& LogDir();
+
 	// Configuration, read once from <PluginDir>/PushAside.ini.
 	//
 	// Every field is the compiled-in default, so deleting the INI yields a working
@@ -142,6 +148,10 @@ namespace pa
 		bool          debugLog = false;
 		std::uint32_t debugLogMaxPerSec = 32;
 		float         calibrationLogAfterSec = 5.0f;
+		// [Diagnostics] Instrumentation side channel: append rich CSV rows to
+		// PushAside.trace (next to PushAside.log). Default off; `trace on` in
+		// PushAside.cmd turns it on at runtime too.
+		bool trace = false;
 
 		static Config& Get();
 		void           Load();

@@ -103,6 +103,20 @@ namespace pa
 		return g_pluginDir;
 	}
 
+	const std::filesystem::path& LogDir()
+	{
+		// SKSE's own log directory resolution (SHGetKnownFolderPath ->
+		// Documents/My Games/<game>/SKSE). Cached: the frame tick calls this.
+		static const std::filesystem::path dir = []() -> std::filesystem::path {
+			auto path = SKSE::log::log_directory();
+			if (path && !path->empty()) {
+				return *path;
+			}
+			return PluginDir();
+		}();
+		return dir;
+	}
+
 	Config& Config::Get()
 	{
 		static Config config;
@@ -202,6 +216,7 @@ namespace pa
 		debugLog = ReadBool("Diagnostics", "bDebugLog", debugLog, ini);
 		debugLogMaxPerSec = ReadUInt("Diagnostics", "uDebugLogMaxPerSec", debugLogMaxPerSec, ini);
 		calibrationLogAfterSec = ReadFloat("Diagnostics", "fCalibrationLogAfterSec", calibrationLogAfterSec, ini);
+		trace = ReadBool("Diagnostics", "bTrace", trace, ini);
 
 		logger::info("config loaded from {}", ini.string());
 	}
@@ -222,6 +237,7 @@ namespace pa
 			" defaultMass=" + std::to_string(defaultCharacterMass) +
 			" heavyRatio=" + std::to_string(heavyMassRatio) +
 			" combatScale=" + std::to_string(combatScale) +
+			" trace=" + std::to_string(trace ? 1 : 0) +
 			" debug=" + std::to_string(debugLog ? 1 : 0);
 	}
 }

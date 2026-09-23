@@ -110,6 +110,80 @@ the wizard. The wizard copies the chosen `fomod/profiles/<profile>.ini` to
 Manual install: copy `PushAside.dll` to `Data/SKSE/Plugins/` and the config to
 `Data/SKSE/Plugins/PushAside.ini`. Logs land next to the other SKSE logs.
 
+## Instrumentation side channel
+
+An in-game command channel and a CSV trace exist so a running game can be
+interrogated without a rebuild + restart. All three files live next to
+`PushAside.log`, i.e. `Documents/My Games/Skyrim Special Edition/SKSE/`:
+
+| file             | direction        | purpose                                              |
+| ---------------- | ---------------- | ---------------------------------------------------- |
+| `PushAside.cmd`  | host -> plugin   | one command per line; `#` comments; blank ignored    |
+| `PushAside.out`  | plugin -> host   | each command echoed with a timestamp and its result  |
+| `PushAside.trace`| plugin -> host   | rich CSV rows while `trace on` (default every frame) |
+
+All three are inert when absent/off: a shipped install has none of them, and
+the poll costs one `stat` per 100 ms.
+
+### Commands (run on the main thread unless noted)
+
+```
+help                                             list the commands
+status                                           counters, registry size, config summary
+registry                                         every registry entry (actor, proxy, controller,
+                                                 collidable, mass, flags)
+bump                                             the live bump record and its full resolution
+                                                 chain (charBody -> refr -> Actor -> ctrl ->
+                                                 proxy, ctrl vptr + class, rigid body motion)
+vtables                                          resolved controller vtable addresses
+actors                                           ProcessLists high actors with controller vptr
+                                                 and the class that vptr matches
+watch <formID> / unwatch                         record one actor in every trace row
+trace on|off|status|every <n>                    control PushAside.trace
+set                                              list live-settable config keys
+set <Section>:<Key> <value>                      change a config value live (General is a
+                                                 wildcard section)
+push <formID> <dv> [ctrl|rb|both]                one explicit push (applied on the physics
+                                                 thread; the before/after velocities are
+                                                 reported in PushAside.out)
+pushhere [dv] [ctrl|rb|both]                     push whatever the bump record names
+```
+
+`set` writes the loaded `Config` and republishes it behind a seqlock
+(`src/LiveConfig.{h,cpp}`); every physics-thread reader takes a consistent
+`LiveConfig::Snapshot()`, so a live change cannot tear under the physics step.
+
+`push` resolves the target actor, controller, proxy and shove axis on the main
+thread, then publishes a request (`src/PushRequest.{h,cpp}`). The write happens
+inside `PushListener::ProcessConstraintsCallback` on the physics thread:
+`ctrl` calls `bhkCharacterController::SetLinearVelocityImpl(current + dv)`, `rb`
+adds `dv` to the character rigid body's `motion.linearVelocity`, `both` does
+both. The observed before/after velocities and whether they actually changed are
+published back and appended to `PushAside.out`.
+
+### Trace columns (51)
+
+```
+frame,ms,
+player_proxy,player_x,player_y,player_z,player_vx,player_vy,player_vz,player_mass,
+bump_charBody,bump_refr,bump_actor,bump_ctrl,bump_ctrl_vptr,bump_rb,
+bump_rb_vx,bump_rb_vy,bump_rb_vz,bump_rb_x,bump_rb_y,bump_rb_z,
+bump_rb_motion,bump_rb_mass,bump_rb_dynamic,
+push_mode,push_dv,push_mech,push_changed,
+push_ctrl_from_x,push_ctrl_from_y,push_ctrl_from_z,
+push_ctrl_to_x,push_ctrl_to_y,push_ctrl_to_z,
+push_rb_from_x,push_rb_from_y,push_rb_from_z,
+push_rb_to_x,push_rb_to_y,push_rb_to_z,
+watch_form,watch_x,watch_y,watch_z,
+watch_ctrl_vx,watch_ctrl_vy,watch_ctrl_vz,
+watch_rb_vx,watch_rb_vy,watch_rb_vz
+```
+
+The header and legend are written when the file is created; the trace stops at
+64 MB and says so in the file and the log. Rows are built in a stack buffer and
+written through one buffered `FILE*`, flushed once per second. Only the main
+thread ever touches the files.
+
 ## Layout
 
 ```
@@ -129,6 +203,12 @@ src/
   PushModel.{h,cpp}       Path 1 (character) + Path 2 (rigid body) model adapter
   PushListener.{h,cpp}    hkpCharacterProxyListener subclass (real overrides, orphan check)
   PushManager.{h,cpp}     vtable-checked attach, re-attach, calibration line
+  LiveConfig.{h,cpp}      PURE live config override (seqlock snapshot + key table) - Linux-tested
+  CommandParse.{h,cpp}    PURE PushAside.cmd parser - Linux-tested
+  TraceFormat.{h,cpp}     PURE trace header/row formatter - Linux-tested
+  CommandChannel.{h,cpp}  main-thread PushAside.cmd poll + dispatch -> PushAside.out
+  TraceChannel.{h,cpp}    main-thread PushAside.trace writer
+  PushRequest.{h,cpp}     push request/result slots; applied on the physics thread
   Hooks/
     HookTargets.def       the frame-tail detour target + E1..E5 (commented)
     HookTargets.h         X-macro expansion -> enum + metadata

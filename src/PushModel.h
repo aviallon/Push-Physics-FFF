@@ -48,6 +48,11 @@ namespace pa
 
 		static void TickMainThread(float a_deltaSec);
 
+		// The effective mass the player contests with (fPlayerMass * P^exponent),
+		// published by the main thread and read by the physics callback. Safe to
+		// call from either thread; returns fPlayerMass before the first publish.
+		[[nodiscard]] static float PlayerEffectiveMass();
+
 		static void LogCalibrationOnce();
 
 		// Thread identity instrumentation (U2): the main thread records itself at

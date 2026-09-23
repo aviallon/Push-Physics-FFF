@@ -598,6 +598,26 @@ namespace pa
 		return target;
 	}
 
+	BumpRecordView ReadBumpRecord()
+	{
+		BumpRecordView view{};
+		auto*           ctrl = PlayerController();
+		if (!ctrl) {
+			return view;
+		}
+		view.force = ctrl->bumpedForce;
+		view.charBody = ctrl->bumpedCharCollisionObject.get();
+		view.refr = view.charBody ? view.charBody->GetUserData() : nullptr;
+		view.actor = view.refr ? view.refr->As<RE::Actor>() : nullptr;
+		if (view.actor && view.actor != RE::PlayerCharacter::GetSingleton()) {
+			view.ctrl = view.actor->GetCharController();
+			if (auto* pc = AsProxyController(view.ctrl)) {
+				view.target = pc->GetCharacterProxy();
+			}
+		}
+		return view;
+	}
+
 	void NoteBumpPushApplied(RE::hkpCharacterProxy* a_target, float a_dv)
 	{
 		if (!a_target) {

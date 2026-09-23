@@ -68,6 +68,18 @@ namespace pa
 		[[nodiscard]] bool Lookup(const RE::hkpCharacterProxy* a_proxy, ProxyEntry& a_out) const;
 		[[nodiscard]] bool ProxyForCollidable(const RE::hkpCollidable* a_collidable, RE::hkpCharacterProxy*& a_proxyOut) const;
 
+		// Main thread only (the single writer): iterate the published entries. No
+		// seqlock is needed because the caller is the writer. Used by the `registry`
+		// command, which is allowed to resolve names.
+		template <class F>
+		void ForEachEntry(F&& a_fn) const
+		{
+			const auto size = size_.load(std::memory_order_relaxed);
+			for (std::uint32_t i = 0; i < size && i < capacity_; ++i) {
+				a_fn(entries_[i]);
+			}
+		}
+
 		// Main-thread state used by the callback without touching the game world.
 		void SetDialogueOpen(bool a_open) { dialogueOpen_.store(a_open, std::memory_order_relaxed); }
 		[[nodiscard]] bool DialogueOpen() const { return dialogueOpen_.load(std::memory_order_relaxed); }

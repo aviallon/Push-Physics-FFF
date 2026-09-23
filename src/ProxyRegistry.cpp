@@ -3,11 +3,13 @@
 #include "ProxyRegistry.h"
 
 #include "Config.h"
+#include "CommandChannel.h"
 #include "FrameClock.h"
 #include "ProxyAccess.h"
 #include "PushListener.h"
 #include "PushManager.h"
 #include "PushModel.h"
+#include "TraceChannel.h"
 #include "WorldContactListener.h"
 
 #include <RE/A/Actor.h>
@@ -335,6 +337,14 @@ namespace pa
 
 	void ProxyRegistry::MainThreadTick()
 	{
+		// Instrumentation side channel (main thread only). It runs even before a
+		// game is loaded so `help`, `status` and `trace on` work at the main menu;
+		// the world-reading commands guard their own nulls, and TraceChannel only
+		// writes a row once a player proxy exists. Both are inert when
+		// PushAside.cmd / PushAside.trace are absent or off.
+		CommandChannel::Tick();
+		TraceChannel::Tick();
+
 		const auto now = FrameClock::NowMs();
 		const auto dtMs = g_lastPumpMs == 0 ? 0 : now - g_lastPumpMs;
 		g_lastPumpMs = now;

@@ -4,6 +4,7 @@
 #include "Config.h"
 #include "Health.h"
 #include "Hooks/FrameTickHook.h"
+#include "LiveConfig.h"
 #include "ProxyRegistry.h"
 #include "PushManager.h"
 #include "PushModel.h"
@@ -71,6 +72,11 @@ SKSE_PLUGIN_LOAD(const SKSE::LoadInterface* a_skse)
 	}
 
 	logger::info("config summary: {}", config.Summary());
+
+	// Publish the loaded config as the live snapshot the physics callback reads.
+	// `set` in PushAside.cmd republishes after each change; without this the
+	// callback would keep seeing the compiled-in defaults.
+	pa::LiveConfig::Publish(config);
 
 	pa::ProxyRegistry::Get().Init(config.registryCapacity);
 	pa::PushRegistry::Get().Init(config.registryCapacity);
