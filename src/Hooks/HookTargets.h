@@ -11,9 +11,9 @@
 // committed verification table. Adding a hook without adding a verified
 // signature is therefore a build error, not an act of faith.
 //
-// The def is currently empty (see the file), so HookTargetId::kCount is 0 and
-// kHookTargets is a valid empty std::array. The array is std::array rather than
-// a C array precisely so that the empty case is standard C++.
+// The def is not empty: it currently declares the frame-tail target that drives
+// the main-thread tick (see Hooks/HookTargets.def). The array is std::array
+// rather than a C array so the empty case is still standard C++.
 
 namespace pa
 {

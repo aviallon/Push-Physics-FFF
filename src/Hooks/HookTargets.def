@@ -31,22 +31,40 @@
 // src/PushManager.{h,cpp}): the engine calls the player bhkCharProxyController's
 // hkpCharacterProxyListener virtuals. That still needs a main-thread tick to
 // re-attach when the player's controller is rebuilt, and the tick is driven by a
-// MinHook function-entry detour on RE::Main::Update. Main::Update is therefore
-// the one active target; tools/check-hooktable.py fails the build the moment a
-// target is added without a committed signature.
+// MinHook function-entry detour. Main::Update itself is therefore NOT a target
+// any more.
 //
-// kMainUpdate - the game's per-frame main update, which is where SKSE's
-// TaskInterface drains its queue. The original implementation re-added its own
-// Task from inside the task, so the queue never drained and the game froze at
-// the main menu (see research/design.md sec 3.5). We detour the function ENTRY
-// (MinHook), not an internal call site: the former pump body runs once per frame
-// after the original returns.
+// kMainUpdateFrameTail - the last call Main::Update makes before its epilogue.
 //
-//   AE id 36564 resolves to RVA 0x658870 (SkyrimSE.exe 1.7.104); the crash
-//   stack's "Main::Update dispatch" at +0x659423 lies inside it.
-//   SE id 35551 is recorded from CommunityShaders (their internal call site),
-//   NOT used at runtime by this AE-only build.
-HOOK_TARGET(kMainUpdate, "Main::Update", kRva, 35551, 36564, 0, 0)
+//   Why not Main::Update (AE id 36564, RVA 0x658870)? Verified in this modlist
+//   (crash 2026-09-23): HDT-SMP installs a function-ENTRY detour on Main::Update
+//   (hdtsmp64 "Hooks::MainHooks::Update"), so the committed prologue no longer
+//   matches and our entry hook is refused. CommunityShaders additionally patches
+//   a call site around Main::Update+0x160, and SKSE's own dispatch runs from
+//   Main::Update+0x9A. The entry is contested.
+//
+//   Instead we hook the function Main::Update calls as its very last instruction
+//   before the epilogue: `call 0x14154AF70` at Main::Update+0xC49. Disassembly of
+//   SkyrimSE.exe 1.7.104 (RVA 0x154AF70) shows that function is a two-instruction
+//   leaf, `incl 0xc8(%rcx); ret` (a frame-end counter) - so it takes one pointer
+//   in RCX and returns void, the simplest possible ABI to forward.
+//
+//   The call-site offset and caller are verified on disk, not guessed: a scan of
+//   the whole 25 MB .text for the E8 rel32 to 0x14154AF70 finds exactly ONE call,
+//   at 0x1406594B9 (Main::Update+0xC49), in the unconditional tail of
+//   Main::Update after the early-exit branch. Hooking the LEAF's entry therefore
+//   runs exactly once per frame and cannot collide with HDT-SMP (Main::Update
+//   entry), CommunityShaders (+0x160) or SKSE (+0x9A) - none of them touches
+//   this function. The committed-table check refuses the hook if its prologue
+//   ever stops matching, which is also the defence against a future plugin
+//   hooking the same leaf.
+//
+//   The previous target (AE 36564, Main::Update) is removed rather than kept:
+//   its prologue is ALREADY patched by HDT-SMP at the time this plugin loads, so
+//   verifying it would make the plugin DEGRADE on every start.
+//
+//   SE id is left 0: this is an AE-only project and the SE id is not needed.
+HOOK_TARGET(kMainUpdateFrameTail, "Main::Update frame-tail counter", kRva, 0, 107306, 0, 0)
 
 // ---------------------------------------------------------------------------
 // ESCALATION TARGETS, COMMENTED OUT ON PURPOSE.

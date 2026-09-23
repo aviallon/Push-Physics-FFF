@@ -37,16 +37,16 @@
   },
   "targets": [
     {
-      "target": "Main::Update",
+      "target": "Main::Update frame-tail counter",
       "kind": "rva",
-      "seId": 35551,
-      "aeId": 36564,
-      "name": "Main::Update_*",
-      "rva": 6654064,
-      "pdataExtent": 3183,
-      "slotLength": 3200,
+      "seId": 0,
+      "aeId": 107306,
+      "name": "BSLightingShader::sub_*",
+      "rva": 22327152,
+      "pdataExtent": null,
+      "slotLength": 64,
       "prologueLength": 32,
-      "prologueHash": 13322326828204480676
+      "prologueHash": 3521344878357876857
     }
   ]
 }

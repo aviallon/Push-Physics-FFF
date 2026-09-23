@@ -55,11 +55,13 @@ namespace pa
 
 		void Init(std::uint32_t a_capacity);   // main thread, before any reader
 		void Invalidate();                     // main thread, kPreLoadGame
+		void RequestRebuild();                 // main thread, save/load message; dirty flag only
 		void RebuildNow();                     // main thread
-		// Main-thread tick, driven once per frame by the Main::Update detour
-		// (src/Hooks/MainUpdateHook.cpp): refresh the registry, drive
+		// Main-thread tick, driven once per frame by the verified frame-tail detour
+		// (src/Hooks/FrameTickHook.cpp): refresh the registry, drive
 		// attach/re-attach and the model's main-thread half, emit the debug
-		// heartbeat. No-op on the world until a game is loaded.
+		// heartbeat. No-op on the world until a game is loaded, RE::Main reports
+		// gameActive and any pending rebuild has settled.
 		void MainThreadTick();
 
 		// Reader, any thread.
@@ -85,5 +87,10 @@ namespace pa
 		std::uint32_t                      capacity_ = 0;
 		std::atomic<bool>                  dialogueOpen_{ false };
 		std::atomic<std::uint64_t>         generation_{ 0 };
+		// Set by RequestRebuild() from the save/load message handler and consumed
+		// by MainThreadTick() once the world is stable. pendingRebuildFrames_ is
+		// only touched on the main thread.
+		std::atomic<bool> rebuildRequested_{ false };
+		std::uint32_t     pendingRebuildFrames_ = 0;
 	};
 }

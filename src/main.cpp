@@ -3,7 +3,7 @@
 #include "BuildInfo.h"
 #include "Config.h"
 #include "Health.h"
-#include "Hooks/MainUpdateHook.h"
+#include "Hooks/FrameTickHook.h"
 #include "ProxyRegistry.h"
 #include "PushManager.h"
 #include "PushModel.h"
@@ -25,15 +25,20 @@ namespace
 		case SKSE::MessagingInterface::kDataLoaded:
 		case SKSE::MessagingInterface::kPostLoadGame:
 		case SKSE::MessagingInterface::kNewGame:
-			// Main thread: refresh the actor<->proxy map, drop stale buffers, attach.
-			pa::ProxyRegistry::Get().RebuildNow();
+			// Main thread, but the world is still being torn down / rebuilt (the
+			// player and every character controller may be mid-reconstruction).
+			// Do NOT iterate ProcessLists or touch an Actor here: set the dirty
+			// flag and let ProxyRegistry::MainThreadTick() rebuild once
+			// PlayerCharacter exists, RE::Main reports gameActive and the settle
+			// frames have elapsed. This handler caused the 2026-09-23 null call
+			// by running RebuildNow() -> StateFlags() -> IsInBleedout() here.
+			pa::ProxyRegistry::Get().RequestRebuild();
 			pa::PushRegistry::Get().Clear();
-			(void)pa::InstallPushListener();
-			pa::PushModel::LogCalibrationOnce();
 			break;
 		case SKSE::MessagingInterface::kPreLoadGame:
 			// Never keep a proxy across a load; the orphan check ignores any late
-			// calls the retired proxy might still make.
+			// calls the retired proxy might still make. Only invalidate - no world
+			// iteration and no attach.
 			pa::DetachPushListener();
 			pa::PushRegistry::Get().Clear();
 			pa::ProxyRegistry::Get().Invalidate();
@@ -71,15 +76,17 @@ SKSE_PLUGIN_LOAD(const SKSE::LoadInterface* a_skse)
 	pa::PushModel::SetMainThreadId(std::this_thread::get_id());
 
 	// The main-thread tick is driven by a verified MinHook function-entry detour
-	// on RE::Main::Update (src/Hooks/MainUpdateHook.cpp). Attaching needs a player
-	// proxy, which does not exist until a game is loaded; the tick attaches on
-	// load and re-attaches whenever the player's controller is rebuilt.
+	// on the leaf Main::Update calls last before its epilogue
+	// (src/Hooks/FrameTickHook.cpp). Main::Update's own entry is left alone: it is
+	// already detoured by HDT-SMP, so our entry hook was refused. Attaching needs a
+	// player proxy, which does not exist until a game is loaded; the tick attaches
+	// on load and re-attaches whenever the player's controller is rebuilt.
 	if (config.useEscalationHooks && !pa::InstallEscalationHooks()) {
 		logger::error("escalation hooks requested but none could be verified; continuing listener-only");
 	}
 
-	if (!pa::InstallMainUpdateHook()) {
-		logger::error("Main::Update hook not installed; attach/re-attach will not run per frame");
+	if (!pa::InstallFrameTickHook()) {
+		logger::error("frame-tick hook not installed; attach/re-attach will not run per frame");
 	}
 
 	logger::info("health: {}", pa::Health::Get().Line());

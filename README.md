@@ -15,9 +15,19 @@ The push mechanism is **listener-attach**, not a code hook: the engine calls the
 player `bhkCharProxyController`'s `hkpCharacterProxyListener` virtuals. That
 still needs a **main-thread tick** to re-attach when the player's controller is
 rebuilt and to run the model's main-thread half. The tick is driven by a
-MinHook **function-entry detour on `RE::Main::Update`** (AE Address Library id
-36564, RVA `0x658870` on 1.7.104), verified at load against the committed
-`hooks/` table before anything is patched.
+MinHook **function-entry detour on the leaf `Main::Update` calls as its last
+instruction before the epilogue** (AE Address Library id 107306, RVA
+`0x154AF70` on 1.7.104), verified at load against the committed `hooks/` table
+before anything is patched.
+
+`Main::Update`'s **own entry is deliberately not hooked**: HDT-SMP already
+installs a function-entry detour there, so its committed prologue no longer
+matches and our entry hook is refused (the crash log from 2026-09-23 shows
+exactly that). CommunityShaders also patches a call site around
+`Main::Update+0x160`, and SKSE dispatches from `Main::Update+0x9A`. The frame-tail
+leaf has exactly one caller in the whole `.text` (that last `Main::Update` call),
+is untouched by all three, and takes one pointer argument and returns void, so it
+is the simplest collision-free per-frame point.
 
 ### Why the tick is not an `SKSE::TaskInterface` task
 
@@ -28,7 +38,7 @@ SKSE drains its task queue from within `Main::Update`, so a self-re-adding task
 never lets the queue drain: the game froze at the main menu while the periodic
 `listener stats:` heartbeat kept printing (the main thread was stuck in that
 loop, and the crash log showed the plugin on the `Main::Update` dispatch stack).
-The detour above removes the task/queue mechanism entirely.
+The frame-tail detour above removes the task/queue mechanism entirely.
 
 ## Goal
 
@@ -105,7 +115,7 @@ Manual install: copy `PushAside.dll` to `Data/SKSE/Plugins/` and the config to
 ```
 src/
   BuildInfo.h             version + build id
-  main.cpp                SKSE entry point (messages, config, registry init, Main::Update detour)
+  main.cpp                SKSE entry point (messages, config, registry init, frame-tick detour)
   Config.{h,cpp}          INI config (research/design.md sec 6.3 schema), plugin directory
   Health.{h,cpp}          OK / DEGRADED / OFF verdict (gate 20)
   FrameClock.{h,cpp}      monotonic ms + once-per-frame key
@@ -120,11 +130,11 @@ src/
   PushListener.{h,cpp}    hkpCharacterProxyListener subclass (real overrides, orphan check)
   PushManager.{h,cpp}     vtable-checked attach, re-attach, calibration line
   Hooks/
-    HookTargets.def       the Main::Update detour target + E1..E5 (commented)
+    HookTargets.def       the frame-tail detour target + E1..E5 (commented)
     HookTargets.h         X-macro expansion -> enum + metadata
     HookTable.{h,cpp}     strict parser for the committed verification table
     HookVerifier.{h,cpp}  identity + id + vtable slot + prologue-hash check
-    MainUpdateHook.{h,cpp} verified MinHook entry detour that drives the tick
+    FrameTickHook.{h,cpp} verified MinHook entry detour that drives the tick
     HookTableData.gen.h   committed tables embedded in the DLL (generated)
 tools/
   gen-hooktable.py        regenerate the committed table (needs the game binary)
@@ -132,7 +142,7 @@ tools/
   validate_fomod.py       self-contained FOMOD gate (keys, XML, package, flags)
 fomod/                    info.xml, ModuleConfig.xml, profiles/, schema/
 config/PushAside.ini      documented defaults
-hooks/                    committed verification tables (AE 1.7.104: Main::Update)
+hooks/                    committed verification tables (AE 1.7.104: Main::Update frame-tail leaf)
 tests/                    off-game xmake project: verification infra + pure model maths
 research/build.md         the build/deploy verdict for this host
 ```

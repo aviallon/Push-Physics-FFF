@@ -11,6 +11,7 @@
 
 #include <RE/A/Actor.h>
 #include <RE/A/ActorState.h>
+#include <RE/M/Main.h>
 #include <RE/P/ProcessLists.h>
 #include <RE/T/TESRace.h>
 #include <RE/U/UI.h>
@@ -27,11 +28,48 @@ namespace pa
 		std::uint64_t g_lastPumpMs = 0;
 		std::uint64_t g_lastStatsMs = 0;
 
+		// Frames to let the world settle after a save/load message before the
+		// registry touches it. kPostLoadGame/kNewGame are delivered while
+		// ProcessLists and the character controllers are still being rebuilt;
+		// iterating them then is what let a half-constructed actor reach the
+		// (null) IsInBleedout relocation. ~0.5 s at 60 fps, plus the gameActive
+		// gate below, is a cheap insurance against acting too early.
+		constexpr std::uint32_t kRebuildSettleFrames = 30;
+
+		// RE::Main::GetSingleton() dereferences its REL::Relocation<Main**> without
+		// checking it. Resolve and check the relocation ourselves, so an unresolved
+		// id can never turn the per-frame tick into a read at address 0. This is the
+		// per-frame path, where a silent unresolved relocation is not acceptable.
+		[[nodiscard]] bool GameActive()
+		{
+			static REL::Relocation<RE::Main**> singleton{ REL::RelocationID(516943, 403449) };
+			if (singleton.address() == 0) {
+				return false;
+			}
+			auto* main = *singleton;
+			return main != nullptr && main->GetRuntimeData().gameActive;
+		}
+
 		[[nodiscard]] std::uint32_t ControllerFlags(RE::bhkCharProxyController* a_ctrl)
 		{
 			return a_ctrl ? a_ctrl->flags.underlying() : 0u;
 		}
 
+		// A cheap sanity check before any field read. It cannot prove an Actor*
+		// is genuinely an actor, but it rejects null and misaligned pointers,
+		// and - crucially - the reads that follow are all INLINE field reads, so
+		// there is no relocation-backed call a wild pointer could be routed to.
+		[[nodiscard]] bool PlausibleActor(const RE::Actor* a_actor)
+		{
+			const auto value = reinterpret_cast<std::uintptr_t>(a_actor);
+			return value >= 0x10000 && (value & 0x7) == 0;
+		}
+
+		// Mass from the Havok proxy when the engine set one, else from the race's
+		// base mass. There is deliberately NO scale correction: the only source
+		// was TESObjectREFR::GetScale(), a REL::Relocation-backed call (AE id
+		// 19664), and a slightly wrong fallback mass is preferable to an
+		// unresolvable call on a bad actor.
 		[[nodiscard]] float MassForProxy(RE::hkpCharacterProxy* a_proxy, RE::Actor* a_actor, bool a_isPlayer)
 		{
 			const auto& cfg = Config::Get();
@@ -40,10 +78,11 @@ namespace pa
 			}
 
 			float mass = a_proxy ? a_proxy->characterMass : 0.0f;
-			if (!(mass > 0.0f) && a_actor) {
-				if (auto* race = a_actor->GetRace()) {
-					const float scale = a_actor->GetScale();
-					mass = race->data.baseMass * scale * scale * scale;
+			if (!(mass > 0.0f) && PlausibleActor(a_actor)) {
+				// ActorRuntimeData::race is a plain inline field; reading it does
+				// not go through Actor::GetRace()'s GetBaseObject() path.
+				if (auto* race = a_actor->GetActorRuntimeData().race) {
+					mass = race->data.baseMass;
 				}
 			}
 			if (!(mass > 0.0f)) {
@@ -52,34 +91,48 @@ namespace pa
 			return mass;
 		}
 
+		// Every flag below comes from an inline field read on the Actor.
+		//
+		// This path used to call Actor::IsInRagdollState(), IsDead(),
+		// IsInCombat(), IsInBleedout(), IsStaggering() and
+		// ActorState::IsSwimming(). Two of those are the bug (2026-09-23):
+		//
+		//   * Actor::IsInBleedout() is RELOCATION_ID(48461, 0). The AE id is 0,
+		//     so on 1.7.104 CommonLibSSE-NG's resolver returns a null address and
+		//     the call jumps to 0 (the crash, PushAside+0x2D2C9). 48461 is the
+		//     SE-only id and is absent from the AE Address Library's naming.
+		//   * Actor::IsInRagdollState() is RELOCATION_ID(36492, 37491), a
+		//     relocation-backed out-of-line call that also internally calls the
+		//     virtual IsDead(false).
+		//
+		// The inline replacements are GetLifeState() (kDead / IsBleedingOut()),
+		// boolFlags (kIsInKillMove) and ActorState's IsSwimming()/IsStaggered().
+		// kProxyRagdoll and kProxyInCombat are DROPPED: the only engine predicates
+		// for them are the relocation/vtable-backed IsInRagdollState() and
+		// IsInCombat(), and no inline equivalent is trustworthy. A gate that never
+		// fires is better than a call that can jump to 0.
 		[[nodiscard]] std::uint32_t StateFlags(RE::Actor* a_actor, RE::bhkCharProxyController* a_ctrl, bool a_isPlayer)
 		{
 			std::uint32_t flags = kProxyKnown;
 			if (a_isPlayer) {
 				flags |= kProxyPlayer;
 			}
-			if (a_actor) {
-				if (a_actor->IsInRagdollState()) {
-					flags |= kProxyRagdoll;
-				}
-				if (a_actor->IsDead()) {
-					flags |= kProxyDead;
-				}
-				if (a_actor->IsInCombat()) {
-					flags |= kProxyInCombat;
-				}
+			if (PlausibleActor(a_actor)) {
 				if (a_actor->IsInKillMove()) {
 					flags |= kProxyKillMove;
 				}
-				if (a_actor->IsInBleedout()) {
-					flags |= kProxyBleedout;
-				}
-				if (a_actor->IsStaggering()) {
-					flags |= kProxyStaggering;
-				}
 				if (auto* state = a_actor->AsActorState()) {
+					if (state->GetLifeState() == RE::ACTOR_LIFE_STATE::kDead) {
+						flags |= kProxyDead;
+					}
+					if (state->IsBleedingOut()) {
+						flags |= kProxyBleedout;
+					}
 					if (state->IsSwimming()) {
 						flags |= kProxySwimming;
+					}
+					if (state->IsStaggered()) {
+						flags |= kProxyStaggering;
 					}
 				}
 			}
@@ -135,7 +188,20 @@ namespace pa
 		size_.store(0, std::memory_order_relaxed);
 		seq_.fetch_add(1, std::memory_order_acq_rel);  // even: stable
 		generation_.fetch_add(1, std::memory_order_acq_rel);
+		rebuildRequested_.store(false, std::memory_order_relaxed);
+		pendingRebuildFrames_ = 0;
 		logger::info("proxy registry invalidated");
+	}
+
+	void ProxyRegistry::RequestRebuild()
+	{
+		// Called from the SKSE message handler at kDataLoaded / kPostLoadGame /
+		// kNewGame. It must not iterate the world: only mark it dirty and let
+		// MainThreadTick do the work once PlayerCharacter exists, RE::Main says
+		// the game is active, and kRebuildSettleFrames have elapsed.
+		pendingRebuildFrames_ = kRebuildSettleFrames;
+		rebuildRequested_.store(true, std::memory_order_release);
+		logger::info("proxy registry rebuild requested; deferred {} frames past gameActive", kRebuildSettleFrames);
 	}
 
 	void ProxyRegistry::RebuildLocked()
@@ -145,15 +211,17 @@ namespace pa
 
 		if (playerProxy) {
 			auto* player = RE::PlayerCharacter::GetSingleton();
-			auto* pc = AsProxyController(player ? player->GetCharController() : nullptr);
-			if (count < capacity_) {
-				FillEntry(entries_[count++], player, pc, true);
+			if (PlausibleActor(player)) {
+				auto* pc = AsProxyController(player->GetCharController());
+				if (count < capacity_) {
+					FillEntry(entries_[count++], player, pc, true);
+				}
 			}
 		}
 
 		if (auto* lists = RE::ProcessLists::GetSingleton()) {
 			lists->ForAllActors([&](RE::Actor* a_actor) -> RE::BSContainer::ForEachResult {
-				if (a_actor == RE::PlayerCharacter::GetSingleton()) {
+				if (!PlausibleActor(a_actor) || a_actor == RE::PlayerCharacter::GetSingleton()) {
 					return RE::BSContainer::ForEachResult::kContinue;
 				}
 				auto* ctrl = a_actor->GetCharController();
@@ -240,17 +308,38 @@ namespace pa
 		const auto dtMs = g_lastPumpMs == 0 ? 0 : now - g_lastPumpMs;
 		g_lastPumpMs = now;
 
-		// Nothing below may touch the world before a save is loaded: ProcessLists
-		// exists at the main menu but has no live actors, and the player's proxy
-		// does not exist yet. The tick still runs every frame (it is also the
-		// heartbeat), it just does no world work until PlayerCharacter exists.
-		const bool gameLoaded = RE::PlayerCharacter::GetSingleton() != nullptr;
+		// Nothing below may touch the world before a save is loaded and the game
+		// reports itself active: ProcessLists exists at the main menu but has no
+		// live actors, the player's proxy does not exist yet, and a deferred
+		// rebuild has not settled. The tick still runs every frame (it is also
+		// the heartbeat); it just does no world work until the world is stable.
+		auto*      player = RE::PlayerCharacter::GetSingleton();
+		const bool gameActive = player != nullptr && GameActive();
 
-		if (gameLoaded) {
-			auto&      registry = ProxyRegistry::Get();
+		if (gameActive) {
+			auto&      registry = *this;
+			bool       rebuild = false;
+
+			// A save/load message only set the dirty flag. Wait out the settle
+			// frames, then force one rebuild and clear the request. While the
+			// request is pending the periodic refresh must NOT fire, or the first
+			// active frame would iterate the world the delay was meant to protect.
+			const bool pending = rebuildRequested_.load(std::memory_order_acquire);
+			if (pending) {
+				if (pendingRebuildFrames_ > 0) {
+					--pendingRebuildFrames_;
+				} else if (rebuildRequested_.exchange(false, std::memory_order_acq_rel)) {
+					rebuild = true;
+				}
+			}
+
 			const auto refreshMs = static_cast<std::uint64_t>(
 				std::max(0.0f, Config::Get().registryRefreshSec) * 1000.0f);
-			if (g_lastRebuildMs == 0 || now - g_lastRebuildMs >= refreshMs) {
+			if (!pending && !rebuild && (g_lastRebuildMs == 0 || now - g_lastRebuildMs >= refreshMs)) {
+				rebuild = true;
+			}
+
+			if (rebuild) {
 				g_lastRebuildMs = now;
 				registry.RebuildNow();
 			}
@@ -260,7 +349,9 @@ namespace pa
 			}
 
 			// Re-attach if the player's controller was rebuilt; drain deferred
-			// staggers; sweep/debug-damp the push buffer.
+			// staggers; sweep/debug-damp the push buffer. PushManagerMainThreadTick
+			// performs the initial attach once a player proxy exists, so the message
+			// handler never has to touch the world.
 			PushManagerMainThreadTick();
 			PushModel::TickMainThread(static_cast<float>(dtMs) / 1000.0f);
 		}

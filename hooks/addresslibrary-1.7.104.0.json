@@ -11,6 +11,6 @@
   "base": 5368709120,
   "note": "Only the ids the committed hook table needs. Committed so CI can check each record's id->rva without the third-party Address Library file, which is not redistributable and is not in this repository.",
   "offsets": {
-    "36564": 6654064
+    "107306": 22327152
   }
 }

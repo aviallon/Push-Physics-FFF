@@ -67,23 +67,30 @@ namespace
 
 int main()
 {
-	// The active list declares the Main::Update detour target that drives the
+	// The active list declares the frame-tail detour target that drives the
 	// main-thread tick. The def, the committed table and the runtime check all
-	// join on this display name, so pin it here.
+	// join on this display name, so pin it here. Main::Update itself is NOT a
+	// target: HDT-SMP already detours its entry, so verifying its prologue would
+	// make the plugin DEGRADE on every start.
 	Check(pa::kHookTargetCount >= 1, "the hook-target list is not empty");
 	{
 		bool found = false;
 		for (std::size_t i = 0; i < pa::kHookTargetCount; ++i) {
 			const auto& target = pa::GetHookTarget(static_cast<pa::HookTargetId>(i));
-			if (std::strcmp(target.name, "Main::Update") == 0) {
+			if (std::strcmp(target.name, "Main::Update frame-tail counter") == 0) {
 				found = true;
-				Check(target.kind == pa::HookKind::kRva, "Main::Update is an rva target");
-				Check(target.aeId == 36564, "Main::Update AE id is 36564");
-				Check(target.seId == 35551, "Main::Update SE id is 35551");
-				Check(target.vtableId == 0 && target.vtableSlot == 0, "Main::Update carries no vtable id/slot");
+				Check(target.kind == pa::HookKind::kRva, "the frame-tail target is an rva target");
+				Check(target.aeId == 107306, "the frame-tail target AE id is 107306");
+				Check(target.seId == 0, "the frame-tail target declares no SE id");
+				Check(target.vtableId == 0 && target.vtableSlot == 0, "the frame-tail target carries no vtable id/slot");
 			}
 		}
-		Check(found, "the Main::Update target is declared");
+		Check(found, "the frame-tail target is declared");
+		for (std::size_t i = 0; i < pa::kHookTargetCount; ++i) {
+			const auto& target = pa::GetHookTarget(static_cast<pa::HookTargetId>(i));
+			Check(std::strcmp(target.name, "Main::Update") != 0,
+				"Main::Update is not a hook target (its entry is detoured by HDT-SMP)");
+		}
 	}
 
 	// FNV-1a 64 is pinned to known vectors so the C++ and the Python

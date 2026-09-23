@@ -336,9 +336,10 @@ is exactly the kind of thing that works in a single-threaded test and crashes
 under a job queue. So:
 
 * `ProxyRegistry` is refreshed on the **main thread** from a per-frame tick
-  driven by a MinHook **function-entry detour on `RE::Main::Update`** every
-  `fRegistryRefreshSec` (default 1.0 s), and immediately on `kPostLoadGame` /
-  `kNewGame`;
+  driven by a MinHook **function-entry detour on the leaf `Main::Update` calls
+  last before its epilogue** (AE id 107306) every `fRegistryRefreshSec` (default
+  1.0 s); `kPostLoadGame` / `kNewGame` only set a dirty flag that the tick
+  consumes once the world is stable (§3.4.2);
 * each entry is published behind a seqlock-style even/odd counter, so a reader
   on any thread sees a whole entry or falls back to defaults;
 * the stagger is *deferred*: the callback pushes `(proxy, dv, dir)` into a fixed
@@ -346,6 +347,11 @@ under a job queue. So:
 
 So the physics callback touches exactly two things: `hkVector4` fields of Havok
 objects, and our own lock-free tables.
+
+Every state flag the registry computes is read from an **inline field** —
+`ActorRuntimeData::boolFlags`, `ActorState::GetLifeState()`/`IsBleedingOut()`/
+`IsSwimming()`/`IsStaggered()`, controller `CHARACTER_FLAGS`. No virtual and no
+`REL::Relocation`-backed `Actor` predicate is called (§3.4.2).
 
 #### 3.4.1 The tick must not be an `SKSE::TaskInterface` task (root cause, 2026-09-23)
 
@@ -371,11 +377,41 @@ The `shared_ptr` lambda capturing its own `std::function` was a reference cycle
 on top of the loop.
 
 The implemented mechanism deletes `StartMainThreadPump`/`AddTask` entirely. A
-MinHook entry detour on `RE::Main::Update` calls the original first and then runs
+MinHook entry detour on the leaf `Main::Update` calls last before its epilogue
+(§3.4.2) calls the original first and then runs
 `ProxyRegistry::MainThreadTick()` (registry refresh, dialogue state,
 `PushManagerMainThreadTick`, `PushModel::TickMainThread`, stats heartbeat). The
 thunk allocates nothing, is re-entrancy-guarded, and reads no world state unless
-`RE::PlayerCharacter::GetSingleton()` exists, so the main menu is cheap.
+`RE::PlayerCharacter::GetSingleton()` exists and `RE::Main::gameActive` is set,
+so the main menu is cheap.
+
+#### 3.4.2 The load-time null call, and why the tick no longer hooks `Main::Update`
+
+Two defects produced the crash of 2026-09-23 (save load):
+
+1. **`Actor::IsInBleedout()` was called from `StateFlags()`.** In
+   CommonLibSSE-NG it is `RELOCATION_ID(48461, 0)`: 48461 is the SE-only id and
+   the AE id is **0**, so on 1.7.104 the resolver returns a null address and the
+   call jumps to `0` (`EXCEPTION_ACCESS_VIOLATION at 0x0`). The same path also
+   used the relocation-backed `IsInRagdollState()` and the virtual
+   `IsDead()`/`IsInCombat()`. All are gone: `StateFlags()` reads
+   `ActorRuntimeData::boolFlags` (`kIsInKillMove`), `ActorState::GetLifeState()`
+   (`kDead`), `IsBleedingOut()`, `IsSwimming()` and `IsStaggered()` inline, and
+   `kProxyRagdoll` / `kProxyInCombat` are dropped rather than computed by a call.
+   `MassForProxy()` no longer calls `GetScale()` (also relocation-backed); it
+   uses the proxy's `characterMass`, then the inline `ActorRuntimeData::race`.
+2. **The world was iterated from the SKSE message handler.** `kPostLoadGame` /
+   `kNewGame` / `kDataLoaded` called `RebuildNow()` immediately, while the player
+   and every character controller were still being reconstructed. The handler now
+   only calls `ProxyRegistry::RequestRebuild()`; the tick performs the rebuild
+   once `PlayerCharacter` exists, the guarded `RE::Main::gameActive` is true, and
+   30 settle frames have elapsed. `kPreLoadGame` only invalidates.
+
+`Main::Update`'s entry is also no longer hooked: HDT-SMP already detours it, so
+the committed prologue does not match and the hook is refused. The replacement
+per-frame point is the leaf `Main::Update` calls last (AE id 107306) — exactly
+one caller in the whole `.text`, untouched by HDT-SMP, CommunityShaders
+(`Main::Update+0x160`) and SKSE (`Main::Update+0x9A`).
 
 ### 3.5 Registration, lifetime and the load cycle
 
@@ -434,9 +470,9 @@ every proxy — but the *owner* is not, so the load cycle is handled explicitly:
 
 | event | action |
 |---|---|
-| `kPostLoadGame`, `kNewGame` | `ProxyRegistry::RebuildNow()`, `AttachTo(PlayerProxy())`, `PushModel::ApplyProxyTuning(player proxy)` (Approach A) |
+| `kPostLoadGame`, `kNewGame`, `kDataLoaded` | `ProxyRegistry::RequestRebuild()` only (dirty flag); `PushRegistry::Clear()`. No world access. |
 | `kPreLoadGame` | `PushRegistry::Clear()`, `ProxyRegistry::Invalidate()`, listener `Detach()` (drop `owner_`); the old proxy's array, if it is ever stepped again, calls us and the orphan check in §3.2 returns immediately |
-| main-thread tick (1 Hz) | if `PlayerProxy() != owner_`, re-attach: the player's controller is rebuilt on death/ragdoll/mount transitions |
+| main-thread tick | if the dirty flag is set, rebuild once `gameActive` + 30 settle frames have elapsed; always re-attach if `PlayerProxy() != owner_`: the player's controller is rebuilt on death/ragdoll/mount transitions |
 
 Death and ragdoll deserve a note: while the player is ragdolled the controller
 is replaced/disabled, so `PlayerProxy()` returns null and we simply stop
@@ -1034,12 +1070,14 @@ SKSE_PLUGIN_LOAD(const SKSE::LoadInterface* a_skse)
 		logger::error("escalation hooks requested but none could be verified; continuing listener-only");
 	}
 
-	// Main-thread tick: a verified MinHook function-entry detour on
-	// RE::Main::Update drives the registry refresh, player-proxy attach/re-attach,
-	// deferred staggers, buffer sweep and the bounded stats line. It is NOT an
-	// SKSE AddTask task (a self-re-adding task froze the game; see §3.4.1).
-	if (!pa::InstallMainUpdateHook()) {
-		logger::error("Main::Update hook not installed; attach/re-attach will not run per frame");
+	// Main-thread tick: a verified MinHook function-entry detour on the leaf
+	// Main::Update calls last before its epilogue drives the registry refresh,
+	// player-proxy attach/re-attach, deferred staggers, buffer sweep and the
+	// bounded stats line. It is NOT an SKSE AddTask task (a self-re-adding task
+	// froze the game; see §3.4.1) and it does NOT hook Main::Update's own entry
+	// (HDT-SMP already does; see §3.4.2).
+	if (!pa::InstallFrameTickHook()) {
+		logger::error("frame-tick hook not installed; attach/re-attach will not run per frame");
 	}
 
 	logger::info("health: {}", ha::Health::Line());

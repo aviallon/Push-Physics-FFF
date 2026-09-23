@@ -359,16 +359,30 @@ proxy→Actor registry, or comparing against `PlayerCharacter::GetSingleton()`.
 (AE **78302**, RVA 0x1066C60) or `AIProcess::KnockExplosion` (AE **39895**) if
 you want the reaction to reuse the engine's own debris/knock behaviour.
 
-**Separately, the main-thread tick is a function-entry detour on
-`RE::Main::Update`** (AE **36564**, RVA **0x658870**, SE 35551 recorded from
-CommunityShaders). It is *not* a push hook and not a push mechanism: it just
-drives `ProxyRegistry` refresh, listener attach/re-attach, the deferred stagger
-drain and the stats heartbeat once per frame. It is verified against
-`hooks/skyrimse-1.7.104.0-846efccf.json` before MinHook patches anything. The
-crash stack's "Main::Update dispatch" at `SkyrimSE.exe+0x659423` lies inside
-this function (pdata extent 0x658870..0x6594DF). Do **not** reintroduce the
-first implementation's `SKSE::GetTaskInterface()->AddTask` self-re-adding loop
-(see research/design.md §3.4.1): it froze the game at the main menu.
+**Separately, the main-thread tick is a function-entry detour on the leaf
+`RE::Main::Update` calls as its last instruction before its epilogue**
+(AE id **107306**, RVA **0x154AF70** on 1.7.104). It is *not* a push hook and not
+a push mechanism: it just drives `ProxyRegistry` refresh, listener
+attach/re-attach, the deferred stagger drain and the stats heartbeat once per
+frame. It is verified against `hooks/skyrimse-1.7.104.0-846efccf.json` before
+MinHook patches anything.
+
+The tick deliberately does **not** hook `RE::Main::Update` (AE 36564, RVA
+0x658870) itself: HDT-SMP installs a function-entry detour there, so the
+committed prologue no longer matches and that hook is refused (crash
+2026-09-23). Disassembling 36564 shows `call 0x14154AF70` at
+`Main::Update+0xC49`, right before the epilogue; a `.text`-wide scan for the
+`E8 rel32` to `0x14154AF70` finds exactly one caller, that instruction. The leaf
+is `incl 0xc8(%rcx); ret`. CommunityShaders patches around
+`Main::Update+0x160` and SKSE dispatches from `Main::Update+0x9A`, so those
+regions are avoided. Do **not** reintroduce the first implementation's
+`SKSE::GetTaskInterface()->AddTask` self-re-adding loop (see research/design.md
+§3.4.1): it froze the game at the main menu.
+
+Also do **not** call `Actor::IsInBleedout()`: it is `RELOCATION_ID(48461, 0)` and
+the AE id is 0, so on 1.7.104 it resolves to a null address and the call jumps to
+0 (the same 2026-09-23 crash). Read `ActorState::GetLifeState()` /
+`IsBleedingOut()` instead.
 
 ### Verification hashes (HeapSentinel convention: AE target + vtable id/slot)
 
@@ -381,7 +395,8 @@ first implementation's `SKSE::GetTaskInterface()->AddTask` self-re-adding loop
 | `bhkCharacterController::TryMoveTo` | 78260 | kRva | 0 | 0 | 0x1063E80 | 1770 | 32 | 0xBF13EEDC2AA50D7E |
 | `bhkCharacterController::ProcessHurtfulBody` | 78302 | kRva | 0 | 0 | 0x1066C60 | 745 | 32 | 0x2C94B2F04299680F |
 | `hkpMotion::ApplyLinearImpulse` | 60970 | kVtable | 227961 | 0x13 | 0xB4F610 | null | 32 | 0xC0CB45878D4C5623 |
-| `RE::Main::Update` (main-thread tick) | 36564 | kRva | 0 | 0 | 0x658870 | 3183 | 32 | 0xB8E269AA60C8D8A4 |
+| `RE::Main::Update` | 36564 | kRva | 0 | 0 | 0x658870 | 3183 | 32 | 0xB8E269AA60C8D8A4 |
+| `Main::Update` frame-tail leaf (main-thread tick) | 107306 | kRva | 0 | 0 | 0x154AF70 | null | 32 | 0x30DE54828E299079 |
 
 (Slot 0x13 for `hkpMotion` was verified by reading the vtable: slot 19 holds
 RVA 0xB4F610; slots 5–10, 18, 20 are `_purecall`, id 109686.)
