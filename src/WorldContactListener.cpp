@@ -89,6 +89,9 @@ namespace pa
 		constexpr std::uint64_t kBumpDetectLogMax = 10;
 		constexpr std::uint64_t kBumpTargetLogMax = kBumpDetectLogMax - 1;
 		std::uint64_t           g_bumpDetectLines = 0;
+		// Proximity guard, see WithinBumpRange(). Withheld duplicates are collapsed so
+		// a sticky record cannot spend the bounded log on one repeated target.
+		RE::hkpCharacterProxy* g_bumpWithheldTarget = nullptr;
 
 		[[nodiscard]] bool ClaimBumpDetectLine(std::uint64_t a_cap)
 		{
@@ -100,10 +103,41 @@ namespace pa
 		}
 
 		// Main thread only. Resolve the engine's bumped character rigid body to the
-		// other character's proxy: userData -> TESObjectREFR -> Actor -> verified
-		// controller -> proxy. Every step is required, so a rock, a null userData or
+		// other character's proxy: userData -> TESObjectREFR -> Actor -> verified		// controller -> proxy. Every step is required, so a rock, a null userData or
 		// the player's own body yields no target. Publish(nullptr) when there is none,
 		// so a stale target from a previous frame is not re-applied.
+		// The engine can leave the last bump in its record (observed: the same
+		// bumpedCharCollisionObject across ~20 s). Publishing it every frame means a
+		// stale target could be pushed across the room, because the model's gates only
+		// test direction and closing speed, never distance. So the publish is gated on
+		// proximity.
+		//
+		// 200 world units ~ 2.9 m (1 unit ~ 1.4 cm) between capsule CENTRES: comfortably
+		// beyond capsule-contact distance for humanoids (radius ~35 units each) and
+		// medium creatures, tight enough that a truly stale target cannot be reached.
+		// Deliberately generous rather than exact - a false withhold is a missed push,
+		// which is far better than a shove at range. Dragons stay out of scope anyway.
+		constexpr float kBumpMaxRangeUnits = 200.0f;
+		std::atomic<std::uint64_t> g_bumpWithheldLines{ 0 };
+		constexpr std::uint64_t    kBumpWithheldLogMax = 4;
+
+		// Main thread. True when the two character capsules are close enough for the
+		// contact to be real. Missing data (no player proxy, no phantom) is NOT treated
+		// as "in range": refusing to publish is the safe direction.
+		[[nodiscard]] bool WithinBumpRange(const RE::hkpCharacterProxy* a_target)
+		{
+			auto* player = PlayerProxy();
+			if (!player || !a_target || !player->shapePhantom || !a_target->shapePhantom) {
+				return false;
+			}
+			const math::Vec3 p = ToVec3(player->shapePhantom->motionState.transform.translation);
+			const math::Vec3 t = ToVec3(a_target->shapePhantom->motionState.transform.translation);
+			const float      dx = p.x - t.x;
+			const float      dy = p.y - t.y;
+			const float      dz = p.z - t.z;
+			return (dx * dx + dy * dy + dz * dz) <= (kBumpMaxRangeUnits * kBumpMaxRangeUnits);
+		}
+
 		void PublishBumpTargetFrom(RE::hkpRigidBody* a_charBody)
 		{
 			auto* refr = a_charBody ? a_charBody->GetUserData() : nullptr;
@@ -113,6 +147,22 @@ namespace pa
 				if (auto* ctrl = AsProxyController(actor->GetCharController())) {
 					target = ctrl->GetCharacterProxy();
 				}
+			}
+
+			// Withheld targets are neither published nor counted as detections, so the
+			// counters stay honest. A withheld line is also the measurement of whether the
+			// engine's bump record is sticky, which is formally unknown.
+			if (target && !WithinBumpRange(target)) {
+				g_bumpTarget.Publish(nullptr);
+				if (g_bumpWithheldTarget != target &&
+					g_bumpWithheldLines.load(std::memory_order_relaxed) < kBumpWithheldLogMax) {
+					g_bumpWithheldTarget = target;
+					g_bumpWithheldLines.fetch_add(1, std::memory_order_relaxed);
+					logger::info("bump detection: withheld stale target actor=0x{:08X} beyond {:.0f} units "
+								 "(the engine's bump record outlived the contact)",
+						reinterpret_cast<std::uintptr_t>(actor), kBumpMaxRangeUnits);
+				}
+				return;
 			}
 
 			g_bumpTarget.Publish(target);
