@@ -142,15 +142,42 @@ namespace pa
 		// line whether or not it resolved. Without this, "record set but unresolved" is
 		// completely silent - the same class of blind spot the guardrails exist for.
 		RE::hkpRigidBody* g_lastLoggedCharBody = nullptr;
+		// The controller-class probe has its OWN budget: the record-change line above
+		// flaps (set/cleared while touching) and would exhaust a shared one before the
+		// class answer, which is the line that decides the push mechanism, ever prints.
+		std::uintptr_t          g_lastClassVptr = 1;
+		std::atomic<std::uint64_t> g_classLines{ 0 };
+		constexpr std::uint64_t    kClassLogMax = 3;
 
 		void PublishBumpTargetFrom(RE::hkpRigidBody* a_charBody)
 		{
 			auto* refr = a_charBody ? a_charBody->GetUserData() : nullptr;
 			auto* actor = refr ? refr->As<RE::Actor>() : nullptr;
-			RE::hkpCharacterProxy* target = nullptr;
+			RE::bhkCharacterController* ctrl = nullptr;
+			RE::hkpCharacterProxy*      target = nullptr;
 			if (actor && actor != RE::PlayerCharacter::GetSingleton()) {
-				if (auto* ctrl = AsProxyController(actor->GetCharController())) {
-					target = ctrl->GetCharacterProxy();
+				ctrl = actor->GetCharController();
+				if (auto* pc = AsProxyController(ctrl)) {
+					target = pc->GetCharacterProxy();
+				}
+			}
+
+			// A non-null controller that is NOT a proxy controller is the one case where
+			// the push mechanism has to differ, so name the class from the vptr instead of
+			// leaving "proxy=0" ambiguous between "no controller" and "another subclass".
+			if (actor && !target) {
+				const auto vptr = ctrl ? *reinterpret_cast<const std::uintptr_t*>(ctrl) : 0;
+				if (vptr != g_lastClassVptr && g_classLines.load(std::memory_order_relaxed) < kClassLogMax) {
+					g_lastClassVptr = vptr;
+					g_classLines.fetch_add(1, std::memory_order_relaxed);
+					static REL::Relocation<std::uintptr_t> kProxyVt{ RE::VTABLE_bhkCharProxyController[1] };
+					static REL::Relocation<std::uintptr_t> kRigidVt{ RE::VTABLE_bhkCharRigidBodyController[1] };
+					logger::info("bump target controller: ctrl=0x{:X} vptr=0x{:X} proxyVtable=0x{:X} "
+								 "rigidBodyVtable=0x{:X} rigidBody=0x{:X} isProxyController={}",
+						reinterpret_cast<std::uintptr_t>(ctrl), vptr,
+						kProxyVt.address(), kRigidVt.address(),
+						reinterpret_cast<std::uintptr_t>(ctrl ? ctrl->GetRigidBody() : nullptr),
+						ctrl && vptr == kProxyVt.address());
 				}
 			}
 
@@ -161,11 +188,12 @@ namespace pa
 			if (g_lastLoggedCharBody != a_charBody) {
 				g_lastLoggedCharBody = a_charBody;
 				if (ClaimBumpDetectLine(kBumpDetectLogMax)) {
-					logger::info("bump record: charBody=0x{:X} refr=0x{:08X} actor=0x{:X} proxy=0x{:X} "
+					logger::info("bump record: charBody=0x{:X} refr=0x{:08X} actor=0x{:X} ctrl=0x{:X} proxy=0x{:X} "
 								 "resolved={} inRange={}",
 						reinterpret_cast<std::uintptr_t>(a_charBody),
 						refr ? refr->GetFormID() : 0u,
 						reinterpret_cast<std::uintptr_t>(actor),
+						reinterpret_cast<std::uintptr_t>(ctrl),
 						reinterpret_cast<std::uintptr_t>(target),
 						target != nullptr,
 						target && WithinBumpRange(target));
