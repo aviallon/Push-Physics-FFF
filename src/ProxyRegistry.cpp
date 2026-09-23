@@ -5,6 +5,7 @@
 #include "Config.h"
 #include "FrameClock.h"
 #include "ProxyAccess.h"
+#include "PushListener.h"
 #include "PushManager.h"
 #include "PushModel.h"
 
@@ -24,6 +25,7 @@ namespace pa
 	{
 		std::uint64_t g_lastRebuildMs = 0;
 		std::uint64_t g_lastPumpMs = 0;
+		std::uint64_t g_lastStatsMs = 0;
 
 		[[nodiscard]] std::uint32_t ControllerFlags(RE::bhkCharProxyController* a_ctrl)
 		{
@@ -260,6 +262,24 @@ namespace pa
 			// staggers; sweep/debug-damp the push buffer.
 			PushManagerMainThreadTick();
 			PushModel::TickMainThread(static_cast<float>(dtMs) / 1000.0f);
+
+			// Instrumentation (design §7 step 3). Whether Havok dispatches the
+			// character-interaction virtual is the one thing that cannot be verified
+			// off-game, so the listener counters must be *observable* in the log, not
+			// merely incremented. Gated on bDebugLog: a shipped install should not
+			// write a stats line forever, and the first-run instrumentation profile
+			// turns it on.
+			if (Config::Get().debugLog) {
+				const auto statsMs = static_cast<std::uint64_t>(
+					std::max(1.0f, Config::Get().calibrationLogAfterSec) * 1000.0f);
+				if (g_lastStatsMs == 0 || now - g_lastStatsMs >= statsMs) {
+					g_lastStatsMs = now;
+					auto* listener = GetPushListener();
+					logger::info("listener stats: character={} object={} constraints={} orphans={}",
+						listener->CharacterCalls(), listener->ObjectCalls(),
+						listener->ConstraintCalls(), OrphanCallCount());
+				}
+			}
 
 			SKSE::GetTaskInterface()->AddTask(*task);
 		};
