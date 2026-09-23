@@ -29,6 +29,26 @@ namespace pa
 		constexpr std::uint64_t kLogWindowMs = 5000;
 		constexpr std::uint64_t kMaxLogs = 20;
 
+		// A silent early return here is indistinguishable from "this channel simply
+		// has no contacts", which is how a mis-typed RE signature survived a whole
+		// test run. Every gate therefore names itself once; the tick stays quiet after
+		// that, so this cannot become a log flood.
+		void NoteGateOnce(std::atomic<bool>& a_flag, const char* a_gate)
+		{
+			bool expected = false;
+			if (a_flag.compare_exchange_strong(expected, true, std::memory_order_relaxed)) {
+				logger::warn("world contact listener: not registered yet - {}", a_gate);
+			}
+		}
+
+		std::atomic<bool> g_gateNoPlayer{ false };
+		std::atomic<bool> g_gateNoCell{ false };
+		std::atomic<bool> g_gateNoWorld{ false };
+		std::atomic<bool> g_gateNoHkWorld{ false };
+		std::atomic<bool> g_gateUtil{ false };
+		std::atomic<bool> g_gateAdd{ false };
+		std::atomic<bool> g_gateVerify{ false };
+
 		[[nodiscard]] RE::TESObjectREFR* BodyRef(RE::hkpRigidBody* a_body)
 		{
 			return a_body ? a_body->GetUserData() : nullptr;
@@ -132,44 +152,60 @@ namespace pa
 
 	void EnsureWorldContactRegistration()
 	{
+		havok::LogResolvedAddressesOnce();
+
 		auto* player = RE::PlayerCharacter::GetSingleton();
 		if (!player) {
+			NoteGateOnce(g_gateNoPlayer, "no PlayerCharacter singleton");
 			return;
 		}
 		auto* cell = player->GetParentCell();
 		if (!cell) {
+			NoteGateOnce(g_gateNoCell, "player has no parent cell");
 			return;
 		}
 		// NiPointer holds the reference the engine handed us for this tick;
 		// registering the listener does not extend the world's life.
 		RE::NiPointer<RE::bhkWorld> world(cell->GetbhkWorld());
 		if (!world) {
+			NoteGateOnce(g_gateNoWorld, "cell has no bhkWorld");
 			return;
 		}
 		auto* hkWorld = world->GetWorld2();
 		if (!hkWorld) {
+			NoteGateOnce(g_gateNoHkWorld, "bhkWorld has no ahkpWorld");
 			return;
 		}
 		if (g_lastWorld.load(std::memory_order_acquire) == hkWorld) {
 			return;  // already handled this world
 		}
 
+		std::int32_t listenerCount = 0;
 		{
 			// The world lock is what Precision takes around listener mutation.
 			RE::BSWriteLockGuard lock(world->worldLock);
 			if (!havok::HasContactListener(hkWorld, &g_worldContactListener)) {
 				if (!havok::EnsureContactCallbackUtil(hkWorld)) {
-					return;  // unresolved: retry next frame, null log is one-shot
+					NoteGateOnce(g_gateUtil, "collision-callback util could not be ensured");
+					return;  // retry next frame, null log is one-shot
 				}
 				if (!havok::TryAddContactListener(hkWorld, &g_worldContactListener)) {
+					NoteGateOnce(g_gateAdd, "hkpWorld_addContactListener call failed");
+					return;
+				}
+				// Assert the effect, not the call: an add that did nothing (wrong id,
+				// wrong world) would otherwise masquerade as "no contacts exist".
+				if (!havok::HasContactListener(hkWorld, &g_worldContactListener)) {
+					NoteGateOnce(g_gateVerify, "listener absent from contactListeners after add");
 					return;
 				}
 			}
+			listenerCount = hkWorld->contactListeners.size();
 		}
 
 		g_lastWorld.store(hkWorld, std::memory_order_release);
-		logger::info("world contact listener registered on hkpWorld 0x{:X} (cell 0x{:08X})",
-			reinterpret_cast<std::uintptr_t>(hkWorld), cell->GetFormID());
+		logger::info("world contact listener registered on hkpWorld 0x{:X} (cell 0x{:08X}, listeners now {})",
+			reinterpret_cast<std::uintptr_t>(hkWorld), cell->GetFormID(), listenerCount);
 	}
 
 	void ResetWorldContactRegistration()

@@ -147,6 +147,65 @@ namespace pa
 			return false;  // table full: stop counting, never evict
 		}
 
+		// Composition probe for the manifold. A bare `pairs=0` cannot distinguish
+		// "the manifold never contains another character" from "it does, but the
+		// target is not in the registry", and those need opposite fixes. Bounded:
+		// a fixed number of lines, one per window, counters only - nothing per point.
+		constexpr std::uint64_t kProbeWindowMs = 5000;
+		constexpr int           kProbeLines = 12;
+		std::atomic<int>           g_probeLines{ 0 };
+		std::atomic<std::uint64_t> g_probeLastMs{ 0 };
+
+		void ProbeManifold(const RE::hkpCharacterProxy* a_self,
+			const RE::hkArray<RE::hkpRootCdPoint>& a_manifold)
+		{
+			if (!Config::Get().debugLog) {
+				return;
+			}
+			if (g_probeLines.load(std::memory_order_relaxed) >= kProbeLines) {
+				return;
+			}
+			const auto now = FrameClock::NowMs();
+			const auto last = g_probeLastMs.load(std::memory_order_relaxed);
+			if (last != 0 && now - last < kProbeWindowMs) {
+				return;
+			}
+			g_probeLastMs.store(now, std::memory_order_relaxed);
+			g_probeLines.fetch_add(1, std::memory_order_relaxed);
+
+			const auto   points = a_manifold.size();
+			std::int32_t collidables = 0;
+			std::int32_t registered = 0;
+			std::int32_t self = 0;
+			std::int32_t other = 0;
+			std::int32_t nullCollidable = 0;
+
+			auto& proxies = ProxyRegistry::Get();
+			for (std::int32_t i = 0; i < points; ++i) {
+				const auto& point = a_manifold[i];
+				const RE::hkpCollidable* cols[2]{ point.rootCollidableA, point.rootCollidableB };
+				for (const auto* col : cols) {
+					++collidables;
+					if (!col) {
+						++nullCollidable;
+						continue;
+					}
+					RE::hkpCharacterProxy* resolved = nullptr;
+					if (proxies.ProxyForCollidable(col, resolved)) {
+						++registered;
+						if (resolved == a_self) {
+							++self;
+						} else {
+							++other;
+						}
+					}
+				}
+			}
+
+			logger::info("manifold probe: points={} collidables={} registered={} self={} other={} null={} pairs={}",
+				points, collidables, registered, self, other, nullCollidable, PushModel::PairCount());
+		}
+
 		// Fill the pure derivation inputs from the live player. Race mass is an
 		// inline TESRace::data field and the five skills go through the
 		// ActorValueOwner virtual, so neither path can be an unresolved
@@ -425,6 +484,8 @@ namespace pa
 		if (!a_self) {
 			return;
 		}
+
+		ProbeManifold(a_self, a_manifold);
 
 		// Dedupe within one manifold pass: several contact points can name the same
 		// target, and the per-target path only needs one. Fixed stack storage, so

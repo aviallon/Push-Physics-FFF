@@ -37,4 +37,9 @@ namespace pa::havok
 	// True when a_listener is already in a_world->contactListeners. Pure inline
 	// scan (no relocation).
 	[[nodiscard]] bool HasContactListener(RE::hkpWorld* a_world, const RE::hkpContactListener* a_listener);
+
+	// Log the two resolved addresses once. A RELOCATION_ID that resolves at
+	// table-generation time but not at runtime is a silent "no contacts" bug, so
+	// the addresses themselves are evidence.
+	void LogResolvedAddressesOnce();
 }

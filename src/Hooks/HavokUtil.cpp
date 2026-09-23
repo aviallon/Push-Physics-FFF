@@ -9,7 +9,7 @@ namespace pa::havok
 {
 	namespace
 	{
-		using RequireUtilFn = bool (*)(RE::hkpWorld*);
+		using RequireUtilFn = void* (*)(RE::hkpWorld*);
 		using AddListenerFn = void* (*)(RE::hkpWorld*, RE::hkpContactListener*);
 
 		// One-shot per function: an unresolved Address Library id would otherwise
@@ -36,7 +36,31 @@ namespace pa::havok
 			LogUnresolvedOnce(logged, "hkpCollisionCallbackUtil_requireCollisionCallbackUtil", 60588, 61437);
 			return false;
 		}
-		return fn(a_world);
+		auto* util = fn(a_world);
+		if (!util) {
+			static std::atomic<bool> loggedNull{ false };
+			bool                     expected = false;
+			if (loggedNull.compare_exchange_strong(expected, true, std::memory_order_relaxed)) {
+				logger::error("hkpCollisionCallbackUtil_requireCollisionCallbackUtil returned null "
+							  "(AE id {} / SE id {}): world contact listener disabled",
+					61437, 60588);
+			}
+			return false;
+		}
+		return true;
+	}
+
+	void LogResolvedAddressesOnce()
+	{
+		static std::atomic<bool> logged{ false };
+		bool                     expected = false;
+		if (!logged.compare_exchange_strong(expected, true, std::memory_order_relaxed)) {
+			return;
+		}
+		static REL::Relocation<RequireUtilFn> requireFn{ REL::RelocationID(60588, 61437) };
+		static REL::Relocation<AddListenerFn> addFn{ REL::RelocationID(60543, 61383) };
+		logger::info("havok world calls resolved: requireCollisionCallbackUtil=0x{:X} addContactListener=0x{:X}",
+			requireFn.address(), addFn.address());
 	}
 
 	bool TryAddContactListener(RE::hkpWorld* a_world, RE::hkpContactListener* a_listener)
