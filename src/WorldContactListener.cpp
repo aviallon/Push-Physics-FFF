@@ -138,6 +138,11 @@ namespace pa
 			return (dx * dx + dy * dy + dz * dz) <= (kBumpMaxRangeUnits * kBumpMaxRangeUnits);
 		}
 
+		// Last bump record we logged, so each change of the engine's record produces one
+		// line whether or not it resolved. Without this, "record set but unresolved" is
+		// completely silent - the same class of blind spot the guardrails exist for.
+		RE::hkpRigidBody* g_lastLoggedCharBody = nullptr;
+
 		void PublishBumpTargetFrom(RE::hkpRigidBody* a_charBody)
 		{
 			auto* refr = a_charBody ? a_charBody->GetUserData() : nullptr;
@@ -146,6 +151,24 @@ namespace pa
 			if (actor && actor != RE::PlayerCharacter::GetSingleton()) {
 				if (auto* ctrl = AsProxyController(actor->GetCharController())) {
 					target = ctrl->GetCharacterProxy();
+				}
+			}
+
+			// One line per CHANGE of the engine's record, naming which step of the
+			// resolution chain produced what. A null charBody means the engine reports no
+			// bump at all (log once for the transition); a non-null charBody with
+			// resolved=false says the field is set but the chain broke here.
+			if (g_lastLoggedCharBody != a_charBody) {
+				g_lastLoggedCharBody = a_charBody;
+				if (ClaimBumpDetectLine(kBumpDetectLogMax)) {
+					logger::info("bump record: charBody=0x{:X} refr=0x{:08X} actor=0x{:X} proxy=0x{:X} "
+								 "resolved={} inRange={}",
+						reinterpret_cast<std::uintptr_t>(a_charBody),
+						refr ? refr->GetFormID() : 0u,
+						reinterpret_cast<std::uintptr_t>(actor),
+						reinterpret_cast<std::uintptr_t>(target),
+						target != nullptr,
+						target && WithinBumpRange(target));
 				}
 			}
 
