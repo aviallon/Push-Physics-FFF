@@ -5,6 +5,7 @@
 #include "CommandParse.h"
 #include "Config.h"
 #include "FrameClock.h"
+#include "GameState.h"
 #include "HkMath.h"
 #include "LiveConfig.h"
 #include "PhysicsMath.h"
@@ -14,6 +15,7 @@
 #include "PushManager.h"
 #include "PushModel.h"
 #include "PushRequest.h"
+#include "SimGuard.h"
 #include "TraceChannel.h"
 #include "WorldContactListener.h"
 
@@ -42,6 +44,7 @@ namespace pa::CommandChannel
 		constexpr std::uint64_t kPollIntervalMs = 100;  // ~10 Hz
 
 		std::filesystem::path      g_cmdPath;
+		bool                       g_armed = false;
 		bool                       g_firstObservation = true;
 		std::uintmax_t             g_lastSize = 0;
 		std::filesystem::file_time_type g_lastMtime{};
@@ -199,7 +202,9 @@ namespace pa::CommandChannel
 				   "set - list live-settable config keys\n"
 				   "set <Section>:<Key> <value> - change a config value live (General is a wildcard section)\n"
 				   "push <formID> <dv> [ctrl|rb|both] - one explicit push on the physics thread\n"
-				   "pushhere [dv] [ctrl|rb|both] - push whatever the bump record names\n";
+				   "pushhere [dv] [ctrl|rb|both] - push whatever the bump record names\n"
+				   "(push/pushhere are refused unless the game is active, focused and the\n"
+				   " physics simulation is stepping; see status -> sim)\n";
 		}
 
 		[[nodiscard]] std::string StatusBody()
@@ -214,6 +219,9 @@ namespace pa::CommandChannel
 				" capacity=" + std::to_string(registry.Capacity()) +
 				" generation=" + std::to_string(registry.Generation()) + "\n";
 			out += "config: " + Config::Get().Summary() + "\n";
+			out += "sim: gameActive=" + std::to_string(IsGameActive() ? 1 : 0) +
+				" stalled=" + std::to_string(SimulationStalled() ? 1 : 0) +
+				" (mutating commands need gameActive=1 and stalled=0)\n";
 			out += "listener: character=" + std::to_string(listener.CharacterCalls()) +
 				" object=" + std::to_string(listener.ObjectCalls()) +
 				" constraints=" + std::to_string(listener.ConstraintCalls()) +
@@ -402,6 +410,14 @@ namespace pa::CommandChannel
 		[[nodiscard]] bool PublishPushFor(RE::Actor* a_actor, RE::bhkCharacterController* a_ctrl,
 			RE::hkpCharacterProxy* a_target, float a_dv, PushMode a_mode, std::string& a_out)
 		{
+			// Mutating-command gate: this runs on the main thread before anything
+			// is published. A stalled simulation (window unfocused, game paused)
+			// or an inactive game must never queue a Havok write.
+			const auto refusal = EvaluateMutation(IsGameActive(), SimulationStalled(), PlayerProxy() != nullptr);
+			if (refusal != MutationRefusal::kNone) {
+				a_out = MutationRefusalName(refusal);
+				return false;
+			}
 			if (!a_ctrl) {
 				a_out = "the target has no character controller";
 				return false;
@@ -491,6 +507,13 @@ namespace pa::CommandChannel
 
 		[[nodiscard]] std::string PushResultBody(const PushResult& a_res)
 		{
+			if (a_res.refusal != 0) {
+				return "push refused: " +
+					std::string(PushApplyRefusalName(static_cast<PushApplyRefusal>(a_res.refusal))) +
+					" (target=" + HexId(a_res.targetFormId) +
+					" mode=" + PushModeName(a_res.mode) +
+					" dv=" + Num(a_res.dv) + ")\n";
+			}
 			std::string out;
 			out += "push result: target=" + HexId(a_res.targetFormId) +
 				" mode=" + PushModeName(a_res.mode) +
@@ -556,6 +579,11 @@ namespace pa::CommandChannel
 		}
 	}
 
+	bool Armed()
+	{
+		return g_armed;
+	}
+
 	void Tick()
 	{
 		const auto now = FrameClock::NowMs();
@@ -571,12 +599,13 @@ namespace pa::CommandChannel
 			Respond("push result", PushResultBody(result));
 		}
 
+		std::error_code ec;
 		if (g_cmdPath.empty()) {
 			g_cmdPath = LogDir() / "PushAside.cmd";
 		}
 
-		std::error_code ec;
-		if (!std::filesystem::exists(g_cmdPath, ec)) {
+		g_armed = std::filesystem::exists(g_cmdPath, ec) && !ec;
+		if (!g_armed) {
 			return;  // a shipped install has no command file: nothing to do
 		}
 		const auto size = std::filesystem::file_size(g_cmdPath, ec);

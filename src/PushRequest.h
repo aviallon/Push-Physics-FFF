@@ -43,6 +43,9 @@ namespace pa
 		PushMode       mode = PushMode::kBoth;
 		float          dv = 0.0f;
 		int            mechanism = 0;  // bitmask: 1 ctrl, 2 rb
+		// pa::PushApplyRefusal; 0 (kNone) means the request was evaluated. Set
+		// when a well-formed request was dropped without writing Havok state.
+		int            refusal = 0;
 		bool           ctrlApplied = false;
 		bool           rbApplied = false;
 		bool           changed = false;
@@ -71,6 +74,10 @@ namespace pa
 
 	// Main thread. Latest wins; a request is applied at most once.
 	void PublishPushRequest(const PushRequest& a_request);
+
+	// Any thread. True while a published request has not yet been consumed (or
+	// dropped) by the physics thread. Read by the stall warning.
+	[[nodiscard]] bool PushRequestPending();
 
 	// Physics thread (ProcessConstraintsCallback). Consumes at most one request
 	// and writes the resulting velocities; publishes a PushResult.

@@ -5,16 +5,18 @@
 #include "Config.h"
 #include "CommandChannel.h"
 #include "FrameClock.h"
+#include "GameState.h"
 #include "ProxyAccess.h"
 #include "PushListener.h"
 #include "PushManager.h"
 #include "PushModel.h"
+#include "PushRequest.h"
+#include "SimGuard.h"
 #include "TraceChannel.h"
 #include "WorldContactListener.h"
 
 #include <RE/A/Actor.h>
 #include <RE/A/ActorState.h>
-#include <RE/M/Main.h>
 #include <RE/P/ProcessLists.h>
 #include <RE/T/TESRace.h>
 #include <RE/U/UI.h>
@@ -38,20 +40,6 @@ namespace pa
 		// (null) IsInBleedout relocation. ~0.5 s at 60 fps, plus the gameActive
 		// gate below, is a cheap insurance against acting too early.
 		constexpr std::uint32_t kRebuildSettleFrames = 30;
-
-		// RE::Main::GetSingleton() dereferences its REL::Relocation<Main**> without
-		// checking it. Resolve and check the relocation ourselves, so an unresolved
-		// id can never turn the per-frame tick into a read at address 0. This is the
-		// per-frame path, where a silent unresolved relocation is not acceptable.
-		[[nodiscard]] bool GameActive()
-		{
-			static REL::Relocation<RE::Main**> singleton{ REL::RelocationID(516943, 403449) };
-			if (singleton.address() == 0) {
-				return false;
-			}
-			auto* main = *singleton;
-			return main != nullptr && main->GetRuntimeData().gameActive;
-		}
 
 		[[nodiscard]] std::uint32_t ControllerFlags(RE::bhkCharProxyController* a_ctrl)
 		{
@@ -198,6 +186,26 @@ namespace pa
 			a_entry.mass = MassForProxy(proxy, a_actor, a_isPlayer);
 			a_entry.flags = StateFlags(a_actor, a_ctrl, a_isPlayer);
 		}
+
+		// One line per stall transition, with the last known state. Gated on the
+		// command file being present so a shipped install (no PushAside.cmd) adds
+		// no new log output: this is part of the live-command side channel.
+		void NoteStallTransition(const StallUpdate& a_update)
+		{
+			if (a_update.enteredStall) {
+				auto* proxy = PlayerProxy();
+				logger::warn("physics stall: no ProcessConstraintsCallback for {} ms "
+							 "(constraints={}, playerProxy=0x{:X}, pushPending={}); "
+							 "mutating live commands are refused until it resumes",
+					a_update.stalledForMs == 0 ? kStallThresholdMs : a_update.stalledForMs,
+					GetPushListener()->ConstraintCalls(),
+					static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(proxy)),
+					PushRequestPending() ? 1 : 0);
+			} else if (a_update.recovered) {
+				logger::info("physics resumed: ProcessConstraintsCallback advanced again after {} ms (constraints={})",
+					a_update.stalledForMs, GetPushListener()->ConstraintCalls());
+			}
+		}
 	}
 
 	ProxyRegistry& ProxyRegistry::Get()
@@ -337,14 +345,6 @@ namespace pa
 
 	void ProxyRegistry::MainThreadTick()
 	{
-		// Instrumentation side channel (main thread only). It runs even before a
-		// game is loaded so `help`, `status` and `trace on` work at the main menu;
-		// the world-reading commands guard their own nulls, and TraceChannel only
-		// writes a row once a player proxy exists. Both are inert when
-		// PushAside.cmd / PushAside.trace are absent or off.
-		CommandChannel::Tick();
-		TraceChannel::Tick();
-
 		const auto now = FrameClock::NowMs();
 		const auto dtMs = g_lastPumpMs == 0 ? 0 : now - g_lastPumpMs;
 		g_lastPumpMs = now;
@@ -355,7 +355,25 @@ namespace pa
 		// rebuild has not settled. The tick still runs every frame (it is also
 		// the heartbeat); it just does no world work until the world is stable.
 		auto*      player = RE::PlayerCharacter::GetSingleton();
-		const bool gameActive = player != nullptr && GameActive();
+		const bool gameActive = player != nullptr && IsGameActive();
+
+		// Physics-stall watchdog: sample BEFORE the command channel runs, so a
+		// `push` in this frame sees this frame's stall state. The state machine is
+		// cheap (atomic counter read + integer compare) and runs even with no
+		// command file; only the transition log is gated on the side channel.
+		const auto stallUpdate = SampleSimulationStallWatch(
+			gameActive, GetPushListener()->ConstraintCalls(), now);
+		if (CommandChannel::Armed()) {
+			NoteStallTransition(stallUpdate);
+		}
+
+		// Instrumentation side channel (main thread only). It runs even before a
+		// game is loaded so `help`, `status` and `trace on` work at the main menu;
+		// the world-reading commands guard their own nulls, and TraceChannel only
+		// writes a row once a player proxy exists. Both are inert when
+		// PushAside.cmd / PushAside.trace are absent or off.
+		CommandChannel::Tick();
+		TraceChannel::Tick();
 
 		if (gameActive) {
 			auto&      registry = *this;

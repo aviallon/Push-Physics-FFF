@@ -46,6 +46,10 @@ target("pushaside-tests")
     add_files("../src/CommandParse.cpp")
     add_files("../src/LiveConfig.cpp")
     add_files("../src/TraceFormat.cpp")
+    -- The physics-stall watchdog and the two refusal predicates are pure C++
+    -- (SimGuard has no RE/Havok/Windows dependency), so the state machine that
+    -- gates a Havok write is asserted on Linux as well.
+    add_files("../src/SimGuard.cpp")
     add_includedirs("..", "../src", ".")
 
     if is_plat("linux") or is_plat("macosx") then

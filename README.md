@@ -145,8 +145,11 @@ set <Section>:<Key> <value>                      change a config value live (Gen
                                                  wildcard section)
 push <formID> <dv> [ctrl|rb|both]                one explicit push (applied on the physics
                                                  thread; the before/after velocities are
-                                                 reported in PushAside.out)
-pushhere [dv] [ctrl|rb|both]                     push whatever the bump record names
+                                                 reported in PushAside.out). Refused with a
+                                                 reason unless the game is active and the
+                                                 simulation is stepping.
+pushhere [dv] [ctrl|rb|both]                     push whatever the bump record names (same
+                                                 refusal rules as push)
 ```
 
 `set` writes the loaded `Config` and republishes it behind a seqlock
@@ -160,6 +163,37 @@ inside `PushListener::ProcessConstraintsCallback` on the physics thread:
 adds `dv` to the character rigid body's `motion.linearVelocity`, `both` does
 both. The observed before/after velocities and whether they actually changed are
 published back and appended to `PushAside.out`.
+
+### Live commands need a focused, running game
+
+The `push` and `pushhere` commands write Havok state. Havok only steps while the
+game window is **focused and the simulation is running**: an unfocused window or
+a paused game still runs the main-thread tick, but the physics character-proxy
+callback stops, so a request queued then would sit in the slot unapplied (or be
+applied later against a stale simulation). This is also how the 2026-09 hang
+looked: the `constraints` counter fell from ~170/s to ~3/s, then stopped, while
+nothing in the log said so.
+
+The plugin therefore refuses `push`/`pushhere` unless **all** of these hold, and
+writes the precise reason to `PushAside.out` instead of publishing anything:
+
+* the game reports itself running (`RE::Main::gameActive`);
+* the physics is not stalled: `ProcessConstraintsCallback` has advanced within
+the last 2 s;
+* a player proxy exists.
+
+A stall is detected on the main thread from the already-visible `constraints`
+counter. While stalled, one warning is logged (with the player proxy, the
+counter and whether a push is pending) and the plugin stays stalled until the
+callbacks advance again, at which point one recovery line is logged. `status`
+now reports `sim: gameActive=... stalled=...` so a stalled run is visible even
+without watching `PushAside.out`.
+
+Read-only commands (`status`, `bump`, `registry`, `actors`, `vtables`) keep
+working regardless of the simulation state: they are how a stall is
+diagnosed. A request that was already pending when a stall began is dropped by
+the physics thread (with a `push refused:` line in `PushAside.out`) rather than
+applied. The whole watchdog is inert when `PushAside.cmd` is absent.
 
 ### Trace columns (51)
 
@@ -196,6 +230,9 @@ src/
   HkMath.h                hkVector4 <-> math::Vec3 helpers
   PhysicsMath.{h,cpp}     PURE push-model maths (direction, mu, heavy gate, caps,
                           cooldown/take-max, expiry, gate refusals) - Linux-tested
+  SimGuard.{h,cpp}        PURE physics-stall watchdog + mutating-command and
+                          request-refusal predicates - Linux-tested
+  GameState.{h,cpp}       checked RE::Main gameActive accessor
   ProxyAccess.{h,cpp}     AsProxyController / PlayerController / PlayerProxy
   ProxyRegistry.{h,cpp}   main-thread actor<->proxy snapshot behind a seqlock
   PushRegistry.{h,cpp}    per-target push buffer (fixed table, spinlocked)

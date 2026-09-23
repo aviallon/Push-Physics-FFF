@@ -9,6 +9,7 @@
 #include "PushManager.h"
 #include "PushModel.h"
 #include "PushRegistry.h"
+#include "SimGuard.h"
 #include "WorldContactListener.h"
 
 namespace
@@ -45,6 +46,10 @@ namespace
 			pa::PushRegistry::Get().Clear();
 			pa::ProxyRegistry::Get().Invalidate();
 			pa::ResetWorldContactRegistration();
+			// The listener is retired, so ProcessConstraintsCallback stops until the
+			// next attach. Drop the stall baseline so the gap is not reported as a
+			// physics stall on the new game's first tick.
+			pa::ResetSimulationStallWatch();
 			break;
 		default:
 			break;

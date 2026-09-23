@@ -20,9 +20,11 @@
 #include "CommandParse.h"
 #include "LiveConfig.h"
 #include "PhysicsMath.h"
+#include "SimGuard.h"
 #include "TraceFormat.h"
 
 #include <cmath>
+#include <limits>
 
 namespace
 {
@@ -583,6 +585,91 @@ int main()
 		char      comment[64]{};
 		const int cn = pa::FormatTraceComment("hello", comment, sizeof(comment));
 		Check(cn > 0 && std::strcmp(comment, "# hello\n") == 0, "a comment line is formatted");
+	}
+
+	// --- physics-stall watchdog + refusal predicates (src/SimGuard.h) ----------
+	// A stalled simulation used to look identical to a healthy one in the logs,
+	// and a Havok write could be queued into it. These pin the state machine and
+	// the two predicates that gate a write on the main and physics threads.
+	{
+		using namespace pa;
+
+		StallWatch watch;
+		auto       u = watch.Sample(true, 100, 1000);
+		Check(!u.enteredStall && !u.recovered, "the first active sample is a baseline, not a transition");
+		Check(watch.State() == StallState::kHealthy && !watch.Stalled(), "the first active sample is healthy");
+
+		// Exactly the threshold is not yet a stall; one ms past it is.
+		u = watch.Sample(true, 100, 3000);
+		Check(!u.enteredStall, "exactly the threshold is not a stall");
+		u = watch.Sample(true, 100, 3001);
+		Check(u.enteredStall && watch.Stalled(), "no progress past the threshold stalls");
+		Check(u.stalledForMs == 2001, "the stall reports how long the counter has been still");
+
+		// Entry is reported once, not every tick.
+		u = watch.Sample(true, 100, 3100);
+		Check(!u.enteredStall && !u.recovered, "an already-stalled machine does not re-report entry");
+
+		// Counter progress recovers, exactly once, and reports the stalled span.
+		u = watch.Sample(true, 101, 3200);
+		Check(u.recovered && !u.enteredStall, "counter progress leaves the stalled state");
+		Check(u.stalledForMs == 2200, "recovery reports the full stalled span");
+		Check(!watch.Stalled() && watch.State() == StallState::kHealthy, "recovery is healthy");
+		u = watch.Sample(true, 102, 3300);
+		Check(!u.recovered, "recovery is reported once");
+
+		// A stall can be re-entered after recovery.
+		u = watch.Sample(true, 102, 6000);
+		Check(u.enteredStall, "a second stall is detected after recovery");
+
+		// An inactive game resets to unknown and re-arms the baseline on resume,
+		// so the threshold is measured from the resume, not the old stall.
+		u = watch.Sample(false, 102, 6100);
+		Check(!u.enteredStall && watch.State() == StallState::kUnknown, "an inactive sample resets to unknown");
+		Check(!watch.Stalled(), "an inactive sample is never stalled");
+		u = watch.Sample(true, 102, 6200);
+		Check(!u.enteredStall, "resuming is a fresh baseline");
+		u = watch.Sample(true, 102, 8200);
+		Check(!u.enteredStall, "the threshold is measured from the resume baseline");
+
+		watch.Reset();
+		Check(watch.State() == StallState::kUnknown && !watch.Stalled(), "Reset returns the machine to unknown");
+
+		// Main-thread mutating-command refusal, in priority order.
+		Check(EvaluateMutation(true, false, true) == MutationRefusal::kNone,
+			"a healthy active game with a proxy allows a mutation");
+		Check(EvaluateMutation(false, false, true) == MutationRefusal::kGameNotActive,
+			"an inactive game is refused first");
+		Check(EvaluateMutation(true, true, true) == MutationRefusal::kSimulationStalled,
+			"a stalled simulation is refused");
+		Check(EvaluateMutation(true, false, false) == MutationRefusal::kNoPlayerProxy,
+			"a missing player proxy is refused");
+		Check(std::strstr(MutationRefusalName(MutationRefusal::kSimulationStalled), "stalled") != nullptr,
+			"the stall refusal names the stall");
+		Check(std::strcmp(MutationRefusalName(MutationRefusal::kGameNotActive), "ok") != 0,
+			"a refusal never names itself ok");
+
+		// Physics-thread request validation.
+		Check(EvaluatePushApply(false, true, 1, 0, 0, 250) == PushApplyRefusal::kNone,
+			"a finite request with a controller applies");
+		Check(EvaluatePushApply(true, true, 1, 0, 0, 250) == PushApplyRefusal::kStalled,
+			"a request is dropped while stalled");
+		Check(EvaluatePushApply(false, false, 1, 0, 0, 250) == PushApplyRefusal::kNoController,
+			"a null controller is refused");
+		const float nan = std::nanf("");
+		const float inf = std::numeric_limits<float>::infinity();
+		Check(EvaluatePushApply(false, true, nan, 0, 0, 250) == PushApplyRefusal::kNonFinite,
+			"a NaN direction is refused");
+		Check(EvaluatePushApply(false, true, 1, 0, 0, nan) == PushApplyRefusal::kNonFinite,
+			"a NaN dv is refused");
+		Check(EvaluatePushApply(false, true, 1, inf, 0, 250) == PushApplyRefusal::kNonFinite,
+			"an infinite direction is refused");
+		Check(EvaluatePushApply(false, true, 1, 0, 0, inf) == PushApplyRefusal::kNonFinite,
+			"an infinite dv is refused");
+		Check(EvaluatePushApply(true, false, nan, 0, 0, 250) == PushApplyRefusal::kStalled,
+			"the stall refusal takes priority over a null controller and a NaN payload");
+		Check(std::strstr(PushApplyRefusalName(PushApplyRefusal::kStalled), "stalled") != nullptr,
+			"the physics-side stall refusal names the stall");
 	}
 
 	std::printf("%d check(s) run, %d failure(s)\n", g_checks, g_failures);

@@ -5,6 +5,7 @@
 #include "FrameClock.h"
 #include "HkMath.h"
 #include "PhysicsMath.h"
+#include "SimGuard.h"
 
 #include <RE/B/bhkCharacterController.h>
 #include <RE/H/hkpCharacterProxy.h>
@@ -42,6 +43,17 @@ namespace pa
 
 		PushStatus g_lastPush;  // main thread only
 
+		// Physics thread. Publish a result through the seqlock slot. Kept in one
+		// place so the refused path and the applied path cannot drift.
+		void PublishResult(const PushResult& a_res)
+		{
+			const auto seq = g_result.seq.load(std::memory_order_relaxed);
+			g_result.seq.store(seq + 1, std::memory_order_release);
+			g_result.value = a_res;
+			g_result.seq.store(seq + 2, std::memory_order_release);
+			g_result.pending.store(true, std::memory_order_release);
+		}
+
 		[[nodiscard]] bool VectorChanged(const float a_from[3], const float a_to[3])
 		{
 			const float dx = a_to[0] - a_from[0];
@@ -58,6 +70,11 @@ namespace pa
 		g_request.value = a_request;
 		g_request.seq.store(seq + 2, std::memory_order_release);  // even: stable
 		g_request.pending.store(true, std::memory_order_release);
+	}
+
+	bool PushRequestPending()
+	{
+		return g_request.pending.load(std::memory_order_acquire);
 	}
 
 	void ApplyPendingPushRequest()
@@ -86,6 +103,17 @@ namespace pa
 		res.mode = req.mode;
 		res.dv = req.dv;
 		res.frame = FrameClock::CurrentFrame();
+
+		// Validate before touching any Havok state: a stalled simulation, a null
+		// controller or a non-finite payload must be dropped, not applied. The
+		// `pending` exchange above already guarantees at-most-once consumption.
+		const auto refusal = EvaluatePushApply(SimulationStalled(), req.ctrl != nullptr,
+			req.dir[0], req.dir[1], req.dir[2], req.dv);
+		if (refusal != PushApplyRefusal::kNone) {
+			res.refusal = static_cast<int>(refusal);
+			PublishResult(res);
+			return;
+		}
 
 		const RE::hkVector4 delta = Hk(req.dir[0] * req.dv, req.dir[1] * req.dv, req.dir[2] * req.dv);
 
@@ -129,11 +157,7 @@ namespace pa
 			(res.ctrlApplied && VectorChanged(res.ctrlFrom, res.ctrlTo)) ||
 			(res.rbApplied && VectorChanged(res.rbFrom, res.rbTo));
 
-		const auto seq = g_result.seq.load(std::memory_order_relaxed);
-		g_result.seq.store(seq + 1, std::memory_order_release);
-		g_result.value = res;
-		g_result.seq.store(seq + 2, std::memory_order_release);
-		g_result.pending.store(true, std::memory_order_release);
+		PublishResult(res);
 	}
 
 	bool DrainPushResult(PushResult& a_out)
@@ -151,6 +175,12 @@ namespace pa
 			if (s1 == s2) {
 				break;
 			}
+		}
+
+		if (a_out.refusal != 0) {
+			// A dropped request must not masquerade as the last applied push in the
+			// `status` line or the trace's push_* columns.
+			return true;
 		}
 
 		g_lastPush.active = true;
