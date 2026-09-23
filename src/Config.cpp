@@ -124,6 +124,7 @@ namespace pa
 		useCharacterInteraction = ReadBool("Listener", "bUseCharacterInteraction", useCharacterInteraction, ini);
 		useObjectInteraction = ReadBool("Listener", "bUseObjectInteraction", useObjectInteraction, ini);
 		useManifoldScan = ReadBool("Listener", "bUseManifoldScan", useManifoldScan, ini);
+		useBumpDetection = ReadBool("Listener", "bUseBumpDetection", useBumpDetection, ini);
 		useEscalationHooks = ReadBool("Listener", "bUseEscalationHooks", useEscalationHooks, ini);
 		targetSideInjection = ReadBool("Listener", "bTargetSideInjection", targetSideInjection, ini);
 
@@ -211,6 +212,7 @@ namespace pa
 			" charInteraction=" + std::to_string(useCharacterInteraction ? 1 : 0) +
 			" objInteraction=" + std::to_string(useObjectInteraction ? 1 : 0) +
 			" manifoldScan=" + std::to_string(useManifoldScan ? 1 : 0) +
+			" bumpDetection=" + std::to_string(useBumpDetection ? 1 : 0) +
 			" escalations=" + std::to_string(useEscalationHooks ? 1 : 0) +
 			" pushScale=" + std::to_string(pushScale) +
 			" minRelSpeed=" + std::to_string(minRelSpeed) +

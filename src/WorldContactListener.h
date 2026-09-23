@@ -5,6 +5,11 @@
 #include <atomic>
 #include <cstdint>
 
+namespace RE
+{
+	class hkpCharacterProxy;
+}
+
 // A process-lifetime hkpContactListener registered on the player's Havok world,
 // instrumentation only: it never pushes. It answers one question the manifold
 // scan cannot - does the engine's world-contact channel deliver player<->actor
@@ -107,6 +112,12 @@ namespace pa
 	// (bhkCharacterController::bumpedBody / bumpedCharCollisionObject) and logs it
 	// when that pair changes, capped at kBumpLogMax lines.
 	//
+	// It also drives bump-record detection: when bumpedCharCollisionObject resolves
+	// to a non-player Actor's character proxy, that proxy is published into a
+	// single slot for the physics thread to consume. Resolution (GetUserData ->
+	// Actor -> GetCharController) happens HERE, on the main thread; nothing on the
+	// physics thread touches the game world to find the target.
+	//
 	// SEMANTICS ARE UNVERIFIED. Those fields appear in research/ as an offset list
 	// only; nothing establishes that they are populated when the PLAYER bumps an
 	// NPC (they may be for object or ragdoll bumps instead). This measures "are
@@ -114,4 +125,25 @@ namespace pa
 	// only a live run can say what that means. Do NOT read its output as "the
 	// player bumped an NPC".
 	void ProbePlayerBumpRecord();
+
+	// Physics thread. Consume the pending bump-detected target proxy. This is a
+	// single-slot exchange(nullptr), so the value is applied at most once and a
+	// null is never returned as a target. Returns nullptr when nothing is pending.
+	[[nodiscard]] RE::hkpCharacterProxy* TakePendingBumpTarget();
+
+	// Physics thread. Record that the character-vs-character model actually
+	// changed this target's velocity through the bump path. Counts are cumulative;
+	// the first occurrence is latched so the main thread can log it once with the
+	// target's actor formID/name (which must not be resolved off-thread).
+	void NoteBumpPushApplied(RE::hkpCharacterProxy* a_target, float a_dv);
+
+	// Distinct target proxies bump-record detection has resolved this session, and
+	// pushes actually applied through this path. Main thread (stats line).
+	[[nodiscard]] std::uint64_t BumpTargetCount();
+	[[nodiscard]] std::uint64_t BumpPushAppliedCount();
+
+	// Main thread. Emit the deferred one-shot "first push applied via the bump
+	// path" line, resolving the target's actor formID/name here. Bounded to a
+	// single line for the session.
+	void ReportBumpDetection();
 }

@@ -405,10 +405,12 @@ namespace pa
 				auto* listener = GetPushListener();
 				const auto contact = GetWorldContactListener().Snapshot();
 				logger::info("listener stats: character={} object={} constraints={} orphans={} pairs={} "
+							 "bumpTargets={} bumpPushes={} "
 							 "contactAdded={} pcActor={} pcObject={} actorActor={} contactOther={} "
 							 "bodyPhantom={} bodyPhantomPlayer={} pcGroup={} nullVsActor={}",
 					listener->CharacterCalls(), listener->ObjectCalls(),
 					listener->ConstraintCalls(), OrphanCallCount(), PushModel::PairCount(),
+					BumpTargetCount(), BumpPushAppliedCount(),
 					contact.collisionAdded, contact.pcActor, contact.pcObject, contact.actorActor, contact.other,
 					contact.bodyPhantom, contact.bodyPhantomPlayer, contact.pcGroup, contact.nullVsActor);
 			}

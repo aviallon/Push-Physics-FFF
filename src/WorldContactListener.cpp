@@ -2,17 +2,20 @@
 
 #include "WorldContactListener.h"
 
+#include "BumpSlot.h"
 #include "Config.h"
 #include "FrameClock.h"
 #include "HkMath.h"
 #include "Hooks/HavokUtil.h"
 #include "ProxyAccess.h"
 #include "ProxyRegistry.h"
+#include "PushModel.h"
 
 #include <RE/A/Actor.h>
 #include <RE/B/BSAtomic.h>
 #include <RE/B/bhkWorld.h>
 #include <RE/H/hkContactPoint.h>
+#include <RE/H/hkpCharacterProxy.h>
 #include <RE/H/hkpCollidable.h>
 #include <RE/H/hkpCollisionEvent.h>
 #include <RE/H/hkpContactPointEvent.h>
@@ -48,6 +51,93 @@ namespace pa
 		// unbounded (alternating bumper pairs would otherwise log every tick).
 		std::atomic<std::uint64_t> g_bumpLines{ 0 };
 		constexpr std::uint64_t    kBumpLogMax = 20;
+
+		// --- bump-record detection -------------------------------------------
+		// Forward declaration: SafeName is defined below with the other diagnostics,
+		// but the bump publishing path (which runs before it in this namespace) needs
+		// it. Physics-thread code must not call it - only main-thread callers do.
+		[[nodiscard]] const char* SafeName(RE::TESObjectREFR* a_refr);
+
+		// Single-slot handoff: the main thread resolves the engine's bump record to
+		// a character proxy and Publishes it here; the physics thread Take()s it
+		// (exchange-clear) inside ProcessConstraintsCallback. Latest wins, nulls are
+		// consumed by TakeForApply and never applied.
+		SingleSlot<RE::hkpCharacterProxy> g_bumpTarget;
+
+		// Distinct bump-detected targets and the cumulative pushes actually applied
+		// through this path. The distinct set is written only on the main thread, so
+		// it needs no lock; the counters are atomics because the push counter is
+		// incremented from the physics thread.
+		constexpr std::size_t              kBumpTargetSlots = 128;
+		RE::hkpCharacterProxy*             g_bumpTargetsSeen[kBumpTargetSlots]{};
+		std::size_t                        g_bumpTargetsSeenCount = 0;
+		std::atomic<std::uint64_t>         g_bumpTargetCount{ 0 };
+		std::atomic<std::uint64_t>         g_bumpPushCount{ 0 };
+
+		// The first push actually applied through the bump path is latched by the
+		// physics thread so the main thread can name its actor (names must not be
+		// resolved off-thread). Release/acquire ordering publishes target/dv before
+		// the latch flag is observed.
+		std::atomic<bool>                  g_bumpPushLatchSet{ false };
+		std::atomic<bool>                  g_bumpPushLatched{ false };
+		std::atomic<RE::hkpCharacterProxy*> g_bumpPushTarget{ nullptr };
+		std::atomic<float>                 g_bumpPushDv{ 0.0f };
+
+		// Bounded logging for detection: a session emits at most kBumpDetectLogMax
+		// lines across "new target" and "first push applied". Written only by the
+		// main thread (ProbePlayerBumpRecord / ReportBumpDetection).
+		constexpr std::uint64_t kBumpDetectLogMax = 10;
+		constexpr std::uint64_t kBumpTargetLogMax = kBumpDetectLogMax - 1;
+		std::uint64_t           g_bumpDetectLines = 0;
+
+		[[nodiscard]] bool ClaimBumpDetectLine(std::uint64_t a_cap)
+		{
+			if (g_bumpDetectLines >= a_cap) {
+				return false;
+			}
+			++g_bumpDetectLines;
+			return true;
+		}
+
+		// Main thread only. Resolve the engine's bumped character rigid body to the
+		// other character's proxy: userData -> TESObjectREFR -> Actor -> verified
+		// controller -> proxy. Every step is required, so a rock, a null userData or
+		// the player's own body yields no target. Publish(nullptr) when there is none,
+		// so a stale target from a previous frame is not re-applied.
+		void PublishBumpTargetFrom(RE::hkpRigidBody* a_charBody)
+		{
+			auto* refr = a_charBody ? a_charBody->GetUserData() : nullptr;
+			auto* actor = refr ? refr->As<RE::Actor>() : nullptr;
+			RE::hkpCharacterProxy* target = nullptr;
+			if (actor && actor != RE::PlayerCharacter::GetSingleton()) {
+				if (auto* ctrl = AsProxyController(actor->GetCharController())) {
+					target = ctrl->GetCharacterProxy();
+				}
+			}
+
+			g_bumpTarget.Publish(target);
+			if (!target) {
+				return;
+			}
+
+			for (std::size_t i = 0; i < g_bumpTargetsSeenCount; ++i) {
+				if (g_bumpTargetsSeen[i] == target) {
+					return;  // already counted and logged
+				}
+			}
+			if (g_bumpTargetsSeenCount < kBumpTargetSlots) {
+				g_bumpTargetsSeen[g_bumpTargetsSeenCount++] = target;
+			}
+			g_bumpTargetCount.fetch_add(1, std::memory_order_relaxed);
+
+			// Unconditional (not gated on bDebugLog): detection evidence is the point,
+			// and this line is capped. Names are resolved here, on the main thread.
+			if (ClaimBumpDetectLine(kBumpTargetLogMax)) {
+				logger::info("bump detection: new target proxy=0x{:X} actor=0x{:08X} '{}' bumpTargets={} pairs={}",
+					reinterpret_cast<std::uintptr_t>(target), actor->GetFormID(), SafeName(actor),
+					BumpTargetCount(), PushModel::PairCount());
+			}
+		}
 
 		constexpr std::uint64_t kLogWindowMs = 5000;
 		constexpr std::uint64_t kMaxLogs = 20;
@@ -331,13 +421,32 @@ namespace pa
 
 	void ProbePlayerBumpRecord()
 	{
+		// The deferred, name-bearing detection report runs on every active tick, even
+		// when the probe's own fields are unchanged (its log is edge-triggered).
+		ReportBumpDetection();
+
 		auto* ctrl = PlayerController();
 		if (!ctrl) {
+			// No verified controller: nothing is bumping, so do not leave a stale
+			// target behind for the physics thread to apply.
+			g_bumpTarget.Publish(nullptr);
 			return;
 		}
 
 		auto* body = ctrl->bumpedBody.get();
 		auto* charBody = ctrl->bumpedCharCollisionObject.get();
+
+		// Detection is level-triggered on the engine's CURRENT record, not on the
+		// edge below: the physics thread must keep seeing the target while the bump
+		// persists. The model's real-closing-speed gate and per-target cooldown bound
+		// what that can do, and a null record clears the slot so a stale target is
+		// never re-applied. Resolution and the first-sight log happen on this, the
+		// main thread; nothing here is done from the callback.
+		if (Config::Get().useBumpDetection) {
+			PublishBumpTargetFrom(charBody);
+		} else {
+			g_bumpTarget.Publish(nullptr);
+		}
 
 		// Edge-triggered on the pair of pointers AND capped: the engine leaves the
 		// last bump in place, so a level-triggered log would repeat one bump forever,
@@ -375,6 +484,71 @@ namespace pa
 			reinterpret_cast<std::uintptr_t>(body), bodyRefr ? bodyRefr->GetFormID() : 0u, SafeName(bodyRefr),
 			reinterpret_cast<std::uintptr_t>(charBody), charRefr ? charRefr->GetFormID() : 0u, SafeName(charRefr),
 			ctrl->bumpedForce);
+	}
+
+	RE::hkpCharacterProxy* TakePendingBumpTarget()
+	{
+		// exchange(nullptr): a target is consumed at most once, and a null in the slot
+		// is consumed and dropped rather than handed out as something to apply.
+		RE::hkpCharacterProxy* target = nullptr;
+		if (!TakeForApply(g_bumpTarget, target)) {
+			return nullptr;
+		}
+		return target;
+	}
+
+	void NoteBumpPushApplied(RE::hkpCharacterProxy* a_target, float a_dv)
+	{
+		if (!a_target) {
+			return;
+		}
+		g_bumpPushCount.fetch_add(1, std::memory_order_relaxed);
+
+		// Latch the first application for the main-thread name log. The physics
+		// thread is the only writer, so compare_exchange cannot lose a race; the
+		// release store publishes target/dv before the acquire load sees the flag.
+		bool expected = false;
+		if (g_bumpPushLatchSet.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+			g_bumpPushTarget.store(a_target, std::memory_order_relaxed);
+			g_bumpPushDv.store(a_dv, std::memory_order_relaxed);
+			g_bumpPushLatched.store(true, std::memory_order_release);
+		}
+	}
+
+	std::uint64_t BumpTargetCount()
+	{
+		return g_bumpTargetCount.load(std::memory_order_relaxed);
+	}
+
+	std::uint64_t BumpPushAppliedCount()
+	{
+		return g_bumpPushCount.load(std::memory_order_relaxed);
+	}
+
+	void ReportBumpDetection()
+	{
+		// One-shot: only the FIRST applied bump push is named, and only from the main
+		// thread, where GetDisplayFullName()/the registry Actor* are safe. The latch
+		// stays set (the counter keeps rising), so this is a cheap atomic load per
+		// tick after the single line is emitted.
+		if (!g_bumpPushLatched.load(std::memory_order_acquire)) {
+			return;
+		}
+		if (!ClaimBumpDetectLine(kBumpDetectLogMax)) {
+			return;
+		}
+		auto* target = g_bumpPushTarget.load(std::memory_order_relaxed);
+		if (!target) {
+			return;
+		}
+		const float dv = g_bumpPushDv.load(std::memory_order_relaxed);
+
+		ProxyEntry info{};
+		const bool known = ProxyRegistry::Get().Lookup(target, info);
+		auto*      actor = known ? info.actor : nullptr;
+		logger::info("bump detection: push applied proxy=0x{:X} actor=0x{:08X} '{}' dv={:.2f} bumpPushes={} pairs={}",
+			reinterpret_cast<std::uintptr_t>(target), actor ? actor->GetFormID() : 0u, SafeName(actor),
+			dv, BumpPushAppliedCount(), PushModel::PairCount());
 	}
 
 
@@ -451,6 +625,21 @@ namespace pa
 		g_lastIdentityLog.store(0, std::memory_order_relaxed);
 		g_lastBumpBody.store(0, std::memory_order_relaxed);
 		g_lastBumpChar.store(0, std::memory_order_relaxed);
+
+		// Bump detection spans a dead generation: clear the pending target (a proxy
+		// pointer from before the load must never be applied), the distinct-target
+		// set (so new targets are re-reported) and the first-application latch (so the
+		// new generation's first push can still be named). The line caps are NOT reset:
+		// the session's log volume stays bounded across loads.
+		g_bumpTarget.Clear();
+		for (std::size_t i = 0; i < g_bumpTargetsSeenCount; ++i) {
+			g_bumpTargetsSeen[i] = nullptr;
+		}
+		g_bumpTargetsSeenCount = 0;
+		g_bumpPushLatchSet.store(false, std::memory_order_relaxed);
+		g_bumpPushLatched.store(false, std::memory_order_release);
+		g_bumpPushTarget.store(nullptr, std::memory_order_relaxed);
+		g_bumpPushDv.store(0.0f, std::memory_order_relaxed);
 		// Re-arm the zero-group warning too: a transient zero observed mid-load must
 		// not consume the one warning that matters for the new generation.
 		g_groupWarned.store(false, std::memory_order_relaxed);

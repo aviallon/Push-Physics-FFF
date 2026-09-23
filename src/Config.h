@@ -25,15 +25,23 @@ namespace pa
 		bool useCharacterInteraction = true;
 		// [Listener] Path 2: our listener's ObjectInteractionCallback.
 		bool useObjectInteraction = true;
-		// [Listener] Primary Path-1 detection: the manifold scan inside
+		// [Listener] Secondary Path-1 detection: the manifold scan inside
 		// ProcessConstraintsCallback. CharacterInteractionCallback does not fire on
-		// the player's proxy (in-game evidence, 2026-09), so this scan is the
-		// default and primary detection path. The leading-proxy ABI is still an
+		// the player's proxy (in-game evidence, 2026-09), so this scan was the
+		// original fallback; bump-record detection (below) is now the primary path
+		// and this is kept as a secondary one. The leading-proxy ABI is still an
 		// unverified NG reconstruction, but the invariant self-check (gate 4)
 		// validates it on live data and disables the scan + marks health DEGRADED
 		// if the ABI is wrong. The CharacterInteractionCallback slot-4 override is
 		// kept compiled and counted (character=) but no longer depended on.
 		bool useManifoldScan = true;
+		// [Listener] Primary Path-1 detection: the engine's own bump record on the
+		// player's controller (bhkCharacterController::bumpedCharCollisionObject).
+		// The main thread resolves it to a character's proxy and publishes it into a
+		// single slot; the physics thread consumes it and drives the existing
+		// character-vs-character model. The manifold scan above is kept as a
+		// secondary path.
+		bool useBumpDetection = true;
 		// [Listener] MinHook escalations (design.md 3.8). 0 = no detour at all.
 		bool useEscalationHooks = false;
 		// [Listener] E1 target-side pre-solve injection.

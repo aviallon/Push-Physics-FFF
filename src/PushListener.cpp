@@ -4,8 +4,12 @@
 
 #include "Config.h"
 #include "Health.h"
+#include "HkMath.h"
 #include "ProxyAccess.h"
 #include "PushModel.h"
+#include "WorldContactListener.h"
+
+#include <RE/H/hkpCharacterProxy.h>
 
 #include <atomic>
 #include <cmath>
@@ -127,6 +131,28 @@ namespace pa
 			std::isfinite(a_input.deltaTime) && a_input.deltaTime > 0.0f && a_input.deltaTime <= 0.2f;
 		if (!invariant.Ok(plausible)) {
 			return;  // never dereference what we cannot vouch for
+		}
+
+		if (Config::Get().useBumpDetection) {
+			// Path-1 primary detection, delivered by the main thread: consume the
+			// single pending target (exchange-clear, so it is applied at most once and
+			// never a null). A nullptr contact makes ComputePushDirection fall back to
+			// the two capsule positions - the shove axis - which is what we want here.
+			RE::hkpCharacterProxy* bumpTarget = TakePendingBumpTarget();
+			if (bumpTarget) {
+				// Assert the effect, not the call: OnCharacterContact returns void, so a
+				// velocity change is the only honest evidence a push was applied. Reading
+				// velocity on this thread, immediately around the call, is not a race -
+				// we are inside the physics step for this proxy.
+				const auto before = ToVec3(bumpTarget->velocity);
+				PushModel::OnCharacterContact(const_cast<RE::hkpCharacterProxy*>(a_proxy), bumpTarget, nullptr);
+				const auto       after = ToVec3(bumpTarget->velocity);
+				const math::Vec3 delta{ after.x - before.x, after.y - before.y, after.z - before.z };
+				const float      appliedDv = math::Length3(delta);
+				if (appliedDv > 0.0f) {
+					NoteBumpPushApplied(bumpTarget, appliedDv);
+				}
+			}
 		}
 
 		if (Config::Get().useManifoldScan) {

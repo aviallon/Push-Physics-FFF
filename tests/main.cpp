@@ -16,6 +16,7 @@
 #include "Hooks/HookTable.h"
 #include "Hooks/HookTargets.h"
 #include "Hooks/HookVerifier.h"
+#include "BumpSlot.h"
 #include "PhysicsMath.h"
 
 #include <cmath>
@@ -353,6 +354,43 @@ int main()
 		Check(std::fabs(EffectivePlayerMass(100.0f, p50, 0.7f) - 100.0f * std::pow(p50, 0.7f)) < 1e-3f,
 			"effective mass follows fPlayerMass * P^exponent");
 		Check(EffectivePlayerMass(100.0f, p50, 0.7f) > 300.0f, "effective mass at L50/skill0.80 exceeds 300");
+	}
+
+	// --- bump-detection single-slot handoff (src/BumpSlot.h) -------------------
+	// The value the physics thread takes is the only thing it may apply, so these
+	// pin the exact semantics used by PushListener::ProcessConstraintsCallback:
+	// latest-wins, exchange clears, an empty or null slot is never applied.
+	{
+		pa::SingleSlot<int> slot;
+		int                first = 1;
+		int                second = 2;
+		int*               out = nullptr;
+
+		Check(!pa::TakeForApply(slot, out), "an empty slot does not apply");
+		Check(out == nullptr, "an empty consume yields nullptr");
+
+		slot.Publish(&first);
+		Check(slot.Peek() == &first, "a published value is visible before the consumer runs");
+		Check(pa::TakeForApply(slot, out) && out == &first, "a published value applies exactly once");
+		Check(slot.Peek() == nullptr, "exchange clears the slot");
+		Check(!pa::TakeForApply(slot, out) && out == nullptr, "the same value cannot be applied twice");
+
+		// Latest wins: an unconsumed value is replaced, never queued.
+		slot.Publish(&first);
+		slot.Publish(&second);
+		Check(slot.Peek() == &second, "latest publish wins (the older value is dropped)");
+		Check(pa::TakeForApply(slot, out) && out == &second, "the latest value is the one applied");
+
+		// A null publish clears, and a null in the slot is consumed and dropped.
+		slot.Publish(&first);
+		slot.Publish(nullptr);
+		Check(slot.Peek() == nullptr, "a null publish clears the slot");
+		Check(!pa::TakeForApply(slot, out) && out == nullptr, "a null in the slot is never applied");
+
+		slot.Publish(&first);
+		slot.Clear();
+		Check(slot.Peek() == nullptr, "Clear() empties the slot");
+		Check(!pa::TakeForApply(slot, out) && out == nullptr, "a cleared slot does not apply");
 	}
 
 	std::printf("%d check(s) run, %d failure(s)\n", g_checks, g_failures);
