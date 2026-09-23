@@ -1,0 +1,276 @@
+name: build
+
+# Builds PushAside.dll for Skyrim AE 1.7.104 with xmake + CommonLibSSE-NG.
+#
+# The plugin is a Windows PE x64 DLL: MSVC is the only toolchain that produces a
+# binary SKSE can load (see research/build.md). The pinned CommonLibSSE-NG
+# revision is the one whose include/REL/IDDB.h defines Format::SSEv5, i.e. it can
+# read the 1.7.104 Address Library (versionlib-1-7-104-0.bin, format 5). CI
+# asserts that before compiling, so a green run cannot come from the wrong
+# reader. Linux jobs run the off-game tests, the hook-table gate and the FOMOD
+# validation.
+
+on:
+  push:
+    branches: ["main"]
+    tags: ["v*"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+env:
+  COMMONLIB_COMMIT: abe9ca7b7318dbc04bccfcd59fc3fb670244c2d7
+  MINHOOK_COMMIT: c3fcafdc10146beb5919319d0683e44e3c30d537
+  XMAKE_GLOBALDIR: ${{ github.workspace }}/.xmake-global
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Pin CommonLibSSE-NG to the format-5 revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd lib/CommonLibSSE-NG
+          git fetch --depth 1 origin "$COMMONLIB_COMMIT"
+          git checkout --detach "$COMMONLIB_COMMIT"
+          git log --oneline -1
+          test -f include/REL/IDDB.h || { echo "::error::IDDB.h missing - wrong revision"; exit 1; }
+          grep -q "SSEv5" include/REL/IDDB.h || { echo "::error::no SSEv5 in IDDB.h"; exit 1; }
+          echo "format-5 Address Library reader present in the pinned revision"
+
+      - name: Pin MinHook
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd lib/minhook
+          git fetch --depth 1 origin "$MINHOOK_COMMIT"
+          git checkout --detach "$MINHOOK_COMMIT"
+          git log --oneline -1
+          test -f include/MinHook.h || { echo "::error::MinHook.h missing"; exit 1; }
+          test -f src/hde/hde64.c || { echo "::error::hde64.c missing"; exit 1; }
+
+      - uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+
+      - name: Cache xmake packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.xmake-global
+          key: xmake-pkgs-${{ runner.os }}-${{ hashFiles('xmake.lua') }}
+          restore-keys: xmake-pkgs-${{ runner.os }}-
+
+      - name: Build PushAside.dll
+        shell: pwsh
+        run: |
+          # The xmake-mirror sometimes answers 504 while fetching a prebuilt
+          # package (directxtk); retry the configure step instead of failing.
+          $ok = $false
+          for ($i = 1; $i -le 8; $i++) {
+            xmake f -p windows -a x64 -m release -y
+            if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+            Write-Host "::warning::xmake configure attempt $i failed; retrying in 20s"
+            Start-Sleep -Seconds 20
+          }
+          if (-not $ok) { Write-Host "::error::xmake configure failed after 8 attempts"; exit 1 }
+
+          xmake build PushAside
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Get-ChildItem -Recurse -Filter PushAside.dll | Select-Object FullName, Length
+
+      - name: Assert the artifact carries the work
+        shell: bash
+        run: |
+          set -euo pipefail
+          dll=$(find build -name PushAside.dll | head -1)
+          [ -n "$dll" ] || { echo "::error::PushAside.dll was not built"; exit 1; }
+          test -s "$dll" || { echo "::error::the built DLL is empty"; exit 1; }
+
+          version=$(grep -oP 'set_version\("\K[^"]+' xmake.lua)
+          for needle in "PushAside" "PushAside.ini" "PushAside v${version}" "bVerifyTargets" "fPushScale" "ProxyRegistry" "vtable slot does not hold the expected function"; do
+            strings -n 5 "$dll" | grep -qF "$needle" || { echo "::error::$needle missing from the DLL"; exit 1; }
+          done
+          echo "the DLL contains the plugin name, config keys and the verification strings"
+
+          sha256sum "$dll"
+
+      - name: Package the flat mod archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(grep -oP 'set_version\("\K[^"]+' xmake.lua)
+          dll=$(find build -name PushAside.dll | head -1)
+          mkdir -p out/SKSE/Plugins
+          cp "$dll" out/SKSE/Plugins/PushAside.dll
+          cp config/PushAside.ini out/SKSE/Plugins/PushAside.ini
+          cp README.md out/
+          # Data at the archive root so Amethyst / MO2 / Vortex install it as a
+          # mod with no manual placement.
+          ( cd out && 7z a -bd -y "../PushAside-${version}.zip" . >/dev/null )
+          ls -l "PushAside-${version}.zip"
+          7z l "PushAside-${version}.zip" | tr '\\' '/' | grep -q "SKSE/Plugins/PushAside.dll" || { echo "::error::the DLL is missing from the archive"; exit 1; }
+          7z l "PushAside-${version}.zip" | tr '\\' '/' | grep -q "SKSE/Plugins/PushAside.ini" || { echo "::error::the config is missing from the archive"; exit 1; }
+          sha256sum "PushAside-${version}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PushAside
+          path: |
+            **/PushAside.dll
+            PushAside-*.zip
+
+      - name: Attach to a release when tagging
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            PushAside-*.zip
+            **/PushAside.dll
+          body: |
+            PushAside - physics-based character pushing for Skyrim SE/AE.
+            Install the FOMOD with Amethyst and pick a push profile, or copy
+            SKSE/Plugins/PushAside.dll and PushAside.ini manually.
+
+  # The committed hook-target verification table. Needs no game binary and no
+  # third-party Address Library file: it checks the committed table against the
+  # canonical target list in the source. With the scaffold's empty target list it
+  # passes trivially; adding a hook without a verified signature fails here.
+  hook-table:
+    name: hook table (completeness/consistency)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the committed hook table
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 --version
+          python3 tools/check-hooktable.py
+
+  # The hook parser/verifier is plain C++ with no Windows dependency, so it is
+  # built and RUN on both platforms. That is the point: running the same checks
+  # under MSVC and under GCC is what makes "the verifier is correct" a checked
+  # claim rather than an assumption about one compiler.
+  tests:
+    name: off-game tests (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: windows-latest
+            platform: windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+
+      - name: Configure
+        shell: bash
+        run: |
+          set -euo pipefail
+          # tests/ is its own xmake project (the plugin is Windows-only), and
+          # xmake takes the action BEFORE -P.
+          xmake f -P tests -p ${{ matrix.platform }} -m release -y
+
+      - name: Build the test binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          xmake build -P tests -y
+
+      - name: Run the off-game test suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          xmake run -P tests 2>&1 | tee tests.out
+
+          # A green run is only meaningful if it actually ran something, so the
+          # contract is asserted rather than trusted: zero failures AND a
+          # non-trivial number of checks.
+          grep -qE '0 failure\(s\)' tests.out || { echo "::error::the suite reported failures"; exit 1; }
+          checks=$(sed -nE 's/.* ([0-9]+) check\(s\) run.*/\1/p' tests.out | tail -1)
+          echo "checks executed: ${checks:-<none>}"
+          test -n "$checks" || { echo "::error::could not read the check count"; exit 1; }
+          test "$checks" -gt 5 || { echo "::error::only $checks checks ran - the suite did not really execute"; exit 1; }
+          echo "the off-game suite ran and reported zero failures"
+
+  # FOMOD packaging + validation. It downloads the built DLL, validates the
+  # installer against the schema and the config parser, and builds the archive.
+  fomod:
+    name: FOMOD package + validation
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the built DLL
+        uses: actions/download-artifact@v4
+        with:
+          name: PushAside
+          path: artifact
+
+      - name: Locate the DLL and read the version
+        id: vars
+        shell: bash
+        run: |
+          set -euo pipefail
+          dll=$(find artifact -name PushAside.dll | head -1)
+          [ -n "$dll" ] || { echo "::error::no PushAside.dll in the downloaded artifact"; exit 1; }
+          test -s "$dll" || { echo "::error::the downloaded DLL is empty"; exit 1; }
+          version=$(grep -oP 'set_version\("\K[^"]+' xmake.lua)
+          [ -n "$version" ] || { echo "::error::could not read the version from xmake.lua"; exit 1; }
+          echo "dll=$dll" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "using $dll for PushAside $version"
+          sha256sum "$dll"
+
+      - name: Validate the FOMOD and build the archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/validate_fomod.py \
+            --dll "${{ steps.vars.outputs.dll }}" \
+            --zip "PushAside-${{ steps.vars.outputs.version }}-fomod.zip" \
+            --stage stage-fomod
+
+      - name: Assert the archive shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip="PushAside-${{ steps.vars.outputs.version }}-fomod.zip"
+          for f in fomod/ModuleConfig.xml fomod/info.xml SKSE/Plugins/PushAside.dll; do
+            unzip -Z1 "$zip" | grep -qxF "$f" || { echo "::error::$f missing from $zip"; exit 1; }
+          done
+          unzip -Z1 "$zip" | grep -qE '^fomod/profiles/[^/]+\.ini$' || { echo "::error::no profile inis in $zip"; exit 1; }
+          echo "archive shape ok"
+          sha256sum "$zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PushAside-FOMOD
+          path: "*-fomod.zip"
+
+      - name: Attach the FOMOD to a release when tagging
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "*-fomod.zip"
+          body: |
+            PushAside FOMOD for SKSE (Skyrim SE/AE, Address Library).
+            Install with Amethyst: Mods -> Install mod from file..., then pick a
+            push-strength profile in the wizard.

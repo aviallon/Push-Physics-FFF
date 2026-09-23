@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
+  <moduleName>PushAside 0.1.0</moduleName>
+  <requiredInstallFiles>
+    <file source="SKSE/Plugins/PushAside.dll" destination="SKSE/Plugins/PushAside.dll" />
+    <file source="README.md" destination="README.md" />
+  </requiredInstallFiles>
+  <installSteps order="Explicit">
+    <installStep name="PushAside">
+      <optionalFileGroups>
+        <group name="Install PushAside" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="Install PushAside">
+              <description>PushAside adds physics-based character pushing: actors and objects that collide with the player receive a configurable impulse through the engine's character-proxy interaction callbacks.
+
+What it does:
+- Hooks the bhkCharProxyController interaction callbacks to observe player/character and player/object collisions.
+- Applies a per-collision impulse, scaled and oriented by the settings you pick on the next page.
+- Is fully configurable from Data/SKSE/Plugins/PushAside.ini; delete the file to fall back to the compiled-in defaults.
+
+What it is NOT:
+- It is not a ragdoll replacement and does not change collision shapes or actor mass.
+- It does not run any network code; nothing leaves the machine.
+
+This build is a scaffold: the plugin loads and logs its configuration, but the physics push logic is not implemented yet (see README.md TODO). Choose a configuration profile on the next page; it selects the PushAside.ini the manager installs.</description>
+              <conditionFlags>
+                <flag name="step">intro</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Required" />
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+    <installStep name="Configuration profile">
+      <optionalFileGroups>
+        <group name="Push strength profile" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="Balanced (recommended)">
+              <description>The tuned default: 100% strength, 150-unit radius, 25% vertical bias, 250 ms cooldown, pushing both actors and objects.
+
+Start here. It is the configuration the push curve is tuned against; the other profiles exist so you can dial the feel up or down without hand-editing the ini.</description>
+              <conditionFlags>
+                <flag name="profile">balanced</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Recommended" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="Strong shove">
+              <description>175% strength, 200-unit radius, 35% vertical bias, 150 ms cooldown, actors and objects on.
+
+Use it if the balanced push feels too gentle, or for a deliberately chaotic session. A shorter cooldown means more impulses per second, which is more likely to interact badly with other physics mods.</description>
+              <conditionFlags>
+                <flag name="profile">strong</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="Subtle nudge">
+              <description>55% strength, 110-unit radius, 10% vertical bias, 400 ms cooldown, actors and objects on.
+
+Use it if you want pushing to read as a shoulder-check rather than an explosion; the longer cooldown keeps it from firing on every incidental contact.</description>
+              <conditionFlags>
+                <flag name="profile">subtle</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="Custom (annotated defaults)">
+              <description>The compiled-in defaults, fully annotated with a comment on every key. Install this only if you intend to edit Data/SKSE/Plugins/PushAside.ini yourself.
+
+Balanced is the recommended choice; this profile exists so an advanced user gets every key documented in the deployed file instead of only the top-level ones.</description>
+              <conditionFlags>
+                <flag name="profile">custom</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+  </installSteps>
+  <conditionalFileInstalls>
+    <patterns>
+      <pattern>
+        <dependencies operator="And">
+          <flagDependency flag="profile" value="balanced" />
+        </dependencies>
+        <files>
+          <file source="fomod/profiles/balanced.ini" destination="SKSE/Plugins/PushAside.ini" />
+        </files>
+      </pattern>
+      <pattern>
+        <dependencies operator="And">
+          <flagDependency flag="profile" value="strong" />
+        </dependencies>
+        <files>
+          <file source="fomod/profiles/strong.ini" destination="SKSE/Plugins/PushAside.ini" />
+        </files>
+      </pattern>
+      <pattern>
+        <dependencies operator="And">
+          <flagDependency flag="profile" value="subtle" />
+        </dependencies>
+        <files>
+          <file source="fomod/profiles/subtle.ini" destination="SKSE/Plugins/PushAside.ini" />
+        </files>
+      </pattern>
+      <pattern>
+        <dependencies operator="And">
+          <flagDependency flag="profile" value="custom" />
+        </dependencies>
+        <files>
+          <file source="fomod/profiles/custom.ini" destination="SKSE/Plugins/PushAside.ini" />
+        </files>
+      </pattern>
+    </patterns>
+  </conditionalFileInstalls>
+</config>

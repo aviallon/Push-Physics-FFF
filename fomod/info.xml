@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<fomod>
+  <Name>PushAside</Name>
+  <Author>aviallon</Author>
+  <Version>0.1.0</Version>
+  <Description>PushAside is an SKSE plugin that adds physics-based character pushing to Skyrim AE: actors and objects that collide with the player receive a configurable impulse through the engine's character-proxy interaction callbacks. Pick a push-strength profile in the installer; every profile states exactly what it changes.</Description>
+  <Website>https://github.com/aviallon/Push-Physics-FFF</Website>
+</fomod>

@@ -1,0 +1,50 @@
+// PushAside hook target registry - THE single source of truth for which engine
+// functions this plugin hooks, and for what the committed verification table
+// must contain.
+//
+// This file is an X-macro list: it is #included by src/Hooks/HookTargets.h to
+// build the C++ enum + metadata, and parsed (not compiled) by
+// tools/check-hooktable.py, which FAILS THE BUILD when a target listed here has
+// no entry in the committed table in hooks/. That is the point: adding a hook
+// without adding a verified signature is a build error, not a silent act of
+// faith.
+//
+// HOOK_TARGET(<enum id>, "<display name>", <kind>, <se id>, <ae id>, <vtable id>, <vtable slot>)
+//
+//   kind      kRva     - a plain (non-virtual) function; the AE id resolves
+//                        straight to the hook address.
+//             kVtable  - a virtual function reached through a vtable; the AE id
+//                        resolves to the function, <vtable id> to the vtable,
+//                        and <vtable slot> is the index that MUST hold it.
+//   se id     the SE Address Library id as used by the installer (0 = none
+//             declared). SE ids are recorded, NOT verified: the committed table
+//             is AE-only, matching the existing convention.
+//   ae id     the AE Address Library id - this is what the table verifies.
+//   vtable id the AE Address Library id of the vtable symbol (0 for kRva).
+//   slot      the vtable index (0 for kRva).
+//
+// Display names are the join key with the committed table and are also what the
+// startup log prints. Keep them stable; renaming one is a table regeneration.
+//
+// ---------------------------------------------------------------------------
+// ACTIVE TABLE IS EMPTY ON PURPOSE. The chosen push mechanism is LISTENER-ATTACH
+// (src/PushListener.{h,cpp} + src/PushManager.{h,cpp}): the engine calls the
+// player bhkCharProxyController's hkpCharacterProxyListener virtuals, so v1
+// installs NO detour and nothing needs verifying. tools/check-hooktable.py
+// passes trivially while the list is empty and fails the build the moment a
+// target is added without a committed signature.
+//
+// The escalation targets below are COMMENTED OUT on purpose. They are the
+// design's E1..E5 (research/design.md sec 3.8); every AE id, vtable id/slot and
+// RVA comes from research/engine-internals.md (verified by reading the 1.7.104
+// binary), NOT from guessing. Turning one on is: uncomment its line, regenerate
+// the table with tools/gen-hooktable.py, and set bUseEscalationHooks=1.
+//
+//   HOOK_TARGET(kProcessConstraints, "bhkCharProxyController::processConstraintsCallback", kVtable, 0, 79130, 240558, 1)   // E1, RVA 0x10976A0, listener vtable slot 1
+//   HOOK_TARGET(kUpdateManifold,     "hkpCharacterProxy::UpdateManifold",                   kVtable, 0, 62647, 230859, 3)   // E2, RVA 0xB9F720,  hkpCharacterProxy vtable slot 3
+//   HOOK_TARGET(kSetLinearVelocity,  "bhkCharProxyController::SetLinearVelocityImpl",       kVtable, 0, 79146, 240560, 7)   // E3, controller vtable slot 7 (RVA generated)
+//   HOOK_TARGET(kProcessHurtfulBody, "bhkCharacterController::ProcessHurtfulBody",          kRva,    0, 78302, 0, 0)        // E4, RVA 0x1066C60
+//   HOOK_TARGET(kApplyLinearImpulse, "hkpMotion::ApplyLinearImpulse",                       kVtable, 0, 60970, 227961, 19)  // E5, RVA 0xB4F610, hkpMotion vtable slot 0x13
+//
+// Until one of those lines is uncommented AND its table entry regenerated, the
+// active list below stays empty and the plugin is listener-only.

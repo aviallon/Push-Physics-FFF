@@ -1,0 +1,50 @@
+#pragma once
+
+#include <RE/H/hkpCharacterProxyListener.h>
+
+#include <atomic>
+#include <cstdint>
+
+// PushAside's character-proxy listener: the mechanism is listener-attach, not a
+// code hook. The engine calls these virtuals on the player's own
+// bhkCharProxyController; the listener is appended to that proxy's listeners
+// array, so `a_proxy` in every callback is the player's proxy by construction
+// and `owner_` is the orphan discriminator (design.md 3.2).
+
+namespace pa
+{
+	class PushListener final : public RE::hkpCharacterProxyListener
+	{
+	public:
+		~PushListener() override = default;
+
+		// hkpCharacterProxyListener overrides.
+		void ProcessConstraintsCallback(const RE::hkpCharacterProxy* a_proxy, const RE::hkArray<RE::hkpRootCdPoint>& a_manifold, RE::hkpSimplexSolverInput& a_input) override;
+		void ContactPointAddedCallback(const RE::hkpCharacterProxy* a_proxy, const RE::hkpRootCdPoint& a_point) override;
+		void ContactPointRemovedCallback(const RE::hkpCharacterProxy* a_proxy, const RE::hkpRootCdPoint& a_point) override;
+
+		// Slot 4 - Path 1: the player's capsule contacts another character's proxy.
+		void CharacterInteractionCallback(RE::hkpCharacterProxy* a_proxy, RE::hkpCharacterProxy* a_otherProxy, const RE::hkContactPoint& a_contact) override;
+
+		// Slot 5 - Path 2: the player's capsule contacts a rigid body.
+		void ObjectInteractionCallback(RE::hkpCharacterProxy* a_proxy, const RE::hkpCharacterObjectInteractionEvent& a_input, RE::hkpCharacterObjectInteractionResult& a_output) override;
+
+		void AttachTo(RE::hkpCharacterProxy* a_proxy);  // main thread only, idempotent
+		void Detach();                                  // main thread only
+		[[nodiscard]] RE::hkpCharacterProxy* Owner() const { return owner_; }
+
+		[[nodiscard]] std::uint64_t CharacterCalls() const { return characterCalls_.load(std::memory_order_relaxed); }
+		[[nodiscard]] std::uint64_t ObjectCalls() const { return objectCalls_.load(std::memory_order_relaxed); }
+		[[nodiscard]] std::uint64_t ConstraintCalls() const { return constraintCalls_.load(std::memory_order_relaxed); }
+
+	private:
+		RE::hkpCharacterProxy*     owner_ = nullptr;
+		std::atomic<std::uint64_t> characterCalls_{ 0 };
+		std::atomic<std::uint64_t> objectCalls_{ 0 };
+		std::atomic<std::uint64_t> constraintCalls_{ 0 };
+	};
+
+	// Gate 2/17 evidence: how many calls arrived for a proxy that was no longer
+	// the player's.
+	[[nodiscard]] std::uint64_t OrphanCallCount();
+}
