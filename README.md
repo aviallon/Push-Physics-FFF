@@ -150,6 +150,11 @@ push <formID> <dv> [ctrl|rb|both]                one explicit push (applied on t
                                                  simulation is stepping.
 pushhere [dv] [ctrl|rb|both]                     push whatever the bump record names (same
                                                  refusal rules as push)
+pushdry <formID> [dv] [ctrl|rb|both]             resolve a target and log exactly what a push
+                                                 would write (pointers, current velocities,
+                                                 dv/direction) without writing anything. Runs
+                                                 even while the simulation is stalled, so the
+                                                 plumbing can be verified with zero hang risk.
 ```
 
 `set` writes the loaded `Config` and republishes it behind a seqlock
@@ -157,12 +162,22 @@ pushhere [dv] [ctrl|rb|both]                     push whatever the bump record n
 `LiveConfig::Snapshot()`, so a live change cannot tear under the physics step.
 
 `push` resolves the target actor, controller, proxy and shove axis on the main
-thread, then publishes a request (`src/PushRequest.{h,cpp}`). The write happens
-inside `PushListener::ProcessConstraintsCallback` on the physics thread:
-`ctrl` calls `bhkCharacterController::SetLinearVelocityImpl(current + dv)`, `rb`
-adds `dv` to the character rigid body's `motion.linearVelocity`, `both` does
-both. The observed before/after velocities and whether they actually changed are
-published back and appended to `PushAside.out`.
+thread, then publishes a request (`src/PushRequest.{h,cpp}`). The write is applied
+on the **main thread**, once per frame, in `ProxyRegistry::MainThreadTick`, under
+the Havok world write lock (`world->worldLock`, the lock Precision takes for
+structural world changes): `ctrl` calls
+`bhkCharacterController::SetLinearVelocityImpl(current + dv)`, `rb` adds `dv` to
+the character rigid body's `motion.linearVelocity`, `both` does both. The engine
+itself sets character velocities from the main thread, so this is the engine's
+own usage pattern.
+
+It deliberately no longer runs inside `PushListener::ProcessConstraintsCallback`:
+that callback runs inside the physics step, in the player character's own solver
+callback, and a push writes into a **different** character's controller / rigid
+body. That re-entrant write hung two game sessions (the main thread ended up
+spinning in `sched_yield`, no crash log). The observed before/after velocities and
+whether they actually changed are published back and appended to
+`PushAside.out`. `pushdry` exercises the same resolution path with no write.
 
 ### Live commands need a focused, running game
 
@@ -191,8 +206,9 @@ without watching `PushAside.out`.
 
 Read-only commands (`status`, `bump`, `registry`, `actors`, `vtables`) keep
 working regardless of the simulation state: they are how a stall is
-diagnosed. A request that was already pending when a stall began is dropped by
-the physics thread (with a `push refused:` line in `PushAside.out`) rather than
+diagnosed. `pushdry` also runs while stalled: it reads state and writes nothing.
+A request that was already pending when a stall began is dropped by the
+main-thread apply (with a `push refused:` line in `PushAside.out`) rather than
 applied. The whole watchdog is inert when `PushAside.cmd` is absent.
 
 ### Trace columns (51)
@@ -320,7 +336,9 @@ src/
   TraceFormat.{h,cpp}     PURE trace header/row formatter - Linux-tested
   CommandChannel.{h,cpp}  main-thread PushAside.cmd poll + dispatch -> PushAside.out
   TraceChannel.{h,cpp}    main-thread PushAside.trace writer
-  PushRequest.{h,cpp}     push request/result slots; applied on the physics thread
+  PushRequest.{h,cpp}     push request/result slots; applied on the main thread
+                          under world->worldLock
+  CommandTail.h           pure append/truncate/rewrite tailer for PushAside.cmd
   Hooks/
     HookTargets.def       the frame-tail detour target + E1..E5 (commented)
     HookTargets.h         X-macro expansion -> enum + metadata

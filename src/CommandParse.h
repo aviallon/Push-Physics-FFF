@@ -27,6 +27,7 @@ namespace pa
 		kSet,
 		kPush,
 		kPushHere,
+		kPushDry,
 		kUnknown,   // recognised as "something" but not a command
 	};
 

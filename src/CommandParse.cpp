@@ -282,6 +282,35 @@ namespace pa
 					break;
 				}
 			}
+		} else if (IEquals(word, "pushdry")) {
+			// `pushdry <formID> [dv] [ctrl|rb|both]`: the same optional-argument shape
+			// as pushhere, but it never writes. The common form
+			// `pushdry <formID> [ctrl|rb|both]` is a subset; dv is optional and only
+			// shown in the report.
+			out.kind = CommandKind::kPushDry;
+			out.dv = 120.0f;
+			if (out.arg1.empty() || !ParseFormId(out.arg1, out.formId)) {
+				out.valid = false;
+				out.error = "usage: pushdry <formID> [dv] [ctrl|rb|both]";
+			} else {
+				const std::string_view args[2]{ out.arg2, out.arg3 };
+				for (const auto arg : args) {
+					if (arg.empty()) {
+						continue;
+					}
+					float    dv = 0.0f;
+					PushMode mode = PushMode::kBoth;
+					if (ParseFloatArg(arg, dv)) {
+						out.dv = dv;
+					} else if (ParsePushMode(arg, mode)) {
+						out.mode = mode;
+					} else {
+						out.valid = false;
+						out.error = "usage: pushdry <formID> [dv] [ctrl|rb|both]";
+						break;
+					}
+				}
+			}
 		} else {
 			out.kind = CommandKind::kUnknown;
 			out.valid = false;

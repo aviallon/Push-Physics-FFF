@@ -3,6 +3,7 @@
 #include "CommandChannel.h"
 
 #include "CommandParse.h"
+#include "CommandTail.h"
 #include "Config.h"
 #include "FrameClock.h"
 #include "GameState.h"
@@ -48,7 +49,7 @@ namespace pa::CommandChannel
 		bool                       g_firstObservation = true;
 		std::uintmax_t             g_lastSize = 0;
 		std::filesystem::file_time_type g_lastMtime{};
-		std::uintmax_t             g_readOffset = 0;
+		CommandTail                g_tail;
 		std::uint64_t              g_lastPollMs = 0;
 
 		[[nodiscard]] std::string HexPtr(std::uintptr_t a_value)
@@ -201,8 +202,11 @@ namespace pa::CommandChannel
 				   "trace on|off|status|every <n> - control PushAside.trace\n"
 				   "set - list live-settable config keys\n"
 				   "set <Section>:<Key> <value> - change a config value live (General is a wildcard section)\n"
-				   "push <formID> <dv> [ctrl|rb|both] - one explicit push on the physics thread\n"
+				   "push <formID> <dv> [ctrl|rb|both] - one explicit push, applied on the\n"
+				   " main thread under the world lock\n"
 				   "pushhere [dv] [ctrl|rb|both] - push whatever the bump record names\n"
+				   "pushdry <formID> [dv] [ctrl|rb|both] - resolve a target and log what a\n"
+				   " push would write, without writing anything (runs even while stalled)\n"
 				   "(push/pushhere are refused unless the game is active, focused and the\n"
 				   " physics simulation is stepping; see status -> sim)\n";
 		}
@@ -496,6 +500,83 @@ namespace pa::CommandChannel
 			return out + "\n";
 		}
 
+		// A dry run of `push`: resolve the target and report exactly what a write
+		// would touch, without touching it. Reading another character's velocity
+		// from the main thread is safe - the simulation does not step concurrently
+		// with this tick - and it cannot hang, which is the point: it verifies the
+		// actor -> controller -> proxy -> direction plumbing with zero risk.
+		[[nodiscard]] std::string PushDryBody(const ParsedCommand& a_cmd)
+		{
+			auto* actor = RE::TESForm::LookupByID<RE::Actor>(a_cmd.formId);
+			if (!actor) {
+				return "pushdry: no actor with formID " + HexId(a_cmd.formId) + "\n";
+			}
+			auto* ctrl = actor->GetCharController();
+			if (!ctrl) {
+				return "pushdry: actor " + HexId(a_cmd.formId) + " has no character controller\n";
+			}
+			RE::hkpCharacterProxy* target = nullptr;
+			if (auto* pc = AsProxyController(ctrl)) {
+				target = pc->GetCharacterProxy();
+			}
+			auto* rb = ctrl->GetRigidBody();
+
+			std::string out;
+			out += "pushdry: target=" + HexId(a_cmd.formId) + " '" + SafeName(actor) + "'" +
+				" targetProxy=" + HexPtr(reinterpret_cast<std::uintptr_t>(target)) + "\n";
+			out += "  sim: gameActive=" + std::to_string(IsGameActive() ? 1 : 0) +
+				" stalled=" + std::to_string(SimulationStalled() ? 1 : 0) +
+				" playerProxy=" + HexPtr(reinterpret_cast<std::uintptr_t>(PlayerProxy())) + "\n";
+			out += "  ctrl=" + HexPtr(reinterpret_cast<std::uintptr_t>(ctrl)) +
+				" rb=" + HexPtr(reinterpret_cast<std::uintptr_t>(rb)) + "\n";
+
+			float ctrlVel[3]{};
+			RE::hkVector4 ctrlHk{};
+			ctrl->GetLinearVelocityImpl(ctrlHk);
+			const auto cv = ToVec3(ctrlHk);
+			ctrlVel[0] = cv.x;
+			ctrlVel[1] = cv.y;
+			ctrlVel[2] = cv.z;
+			out += "  ctrl velocity=" + Vec3Text(ctrlVel) + "\n";
+
+			if (rb) {
+				const auto v = ToVec3(rb->motion.linearVelocity);
+				const float rbVel[3]{ v.x, v.y, v.z };
+				out += "  rb   velocity=" + Vec3Text(rbVel) + "\n";
+			} else {
+				out += "  rb   velocity=(none: no rigid body)\n";
+			}
+
+			auto*        playerProxy = PlayerProxy();
+			math::Vec3   dir{};
+			bool         haveDir = false;
+			if (playerProxy && playerProxy->shapePhantom) {
+				math::Vec3 targetPos{};
+				if (target && target->shapePhantom) {
+					targetPos = ToVec3(target->shapePhantom->motionState.transform.translation);
+				} else if (rb) {
+					targetPos = ToVec3(rb->motion.motionState.transform.translation);
+				}
+				const math::Vec3 playerPos = ToVec3(playerProxy->shapePhantom->motionState.transform.translation);
+				haveDir = math::ComputePushDirection(playerPos, targetPos, {}, dir);
+			}
+
+			if (!haveDir) {
+				out += "  dir=(unresolved: no player proxy, or player and target coincide)\n";
+			} else {
+				const float dirArr[3]{ dir.x, dir.y, dir.z };
+				out += "  mode=" + std::string(PushModeName(a_cmd.mode)) +
+					" dv=" + Num(a_cmd.dv) + " dir=" + Vec3Text(dirArr) + "\n";
+				const float delta[3]{ dir.x * a_cmd.dv, dir.y * a_cmd.dv, dir.z * a_cmd.dv };
+				out += "  would add delta=" + Vec3Text(delta) +
+					" to " + (a_cmd.mode == PushMode::kCtrl ? std::string("ctrl only") :
+										a_cmd.mode == PushMode::kRb ? std::string("rb only") : std::string("ctrl and rb")) +
+					"\n";
+			}
+			out += "  (no write performed)\n";
+			return out;
+		}
+
 		[[nodiscard]] std::string WatchBody(const ParsedCommand& a_cmd)
 		{
 			TraceChannel::SetWatch(a_cmd.formId);
@@ -571,6 +652,9 @@ namespace pa::CommandChannel
 			case CommandKind::kPushHere:
 				body = PushHereBody(a_cmd);
 				break;
+			case CommandKind::kPushDry:
+				body = PushDryBody(a_cmd);
+				break;
 			default:
 				body = "not a command\n";
 				break;
@@ -592,8 +676,9 @@ namespace pa::CommandChannel
 		}
 		g_lastPollMs = now;
 
-		// A push result is produced on the physics thread; report it here, on the
-		// main thread, where file I/O and name resolution are allowed.
+		// A push result is produced by ApplyPendingPushRequest() on the main thread
+		// (next to the world lock) and reported here, where file I/O and name
+		// resolution are allowed.
 		PushResult result{};
 		if (DrainPushResult(result)) {
 			Respond("push result", PushResultBody(result));
@@ -604,8 +689,32 @@ namespace pa::CommandChannel
 			g_cmdPath = LogDir() / "PushAside.cmd";
 		}
 
-		g_armed = std::filesystem::exists(g_cmdPath, ec) && !ec;
-		if (!g_armed) {
+		const bool exists = std::filesystem::exists(g_cmdPath, ec) && !ec;
+		g_armed = exists;
+
+		// Baseline once, at the first tick, whether or not the file exists yet.
+		// A file that already exists is this session's starting point (commands
+		// queued in it before the plugin started are not replayed); a file created
+		// later must be read from its first line, not swallowed as if it predated
+		// the session. The old code only baselined the first time it SAW a file,
+		// so a file created after the first tick had its first command (typically
+		// `watch`) silently discarded as baseline.
+		if (g_firstObservation) {
+			g_firstObservation = false;
+			if (exists) {
+				std::ifstream in(g_cmdPath, std::ios::binary);
+				if (in) {
+					g_tail.Baseline(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
+				}
+				g_lastSize = std::filesystem::file_size(g_cmdPath, ec);
+				if (!ec) {
+					g_lastMtime = std::filesystem::last_write_time(g_cmdPath, ec);
+				}
+			}
+			return;
+		}
+
+		if (!exists) {
 			return;  // a shipped install has no command file: nothing to do
 		}
 		const auto size = std::filesystem::file_size(g_cmdPath, ec);
@@ -616,40 +725,28 @@ namespace pa::CommandChannel
 		if (ec) {
 			return;
 		}
-
-		// First sight of an existing file is treated as the baseline: commands that
-		// were already there before this session are not replayed.
-		if (g_firstObservation) {
-			g_firstObservation = false;
-			g_lastSize = size;
-			g_lastMtime = mtime;
-			g_readOffset = size;
-			return;
-		}
-
 		if (size == g_lastSize && mtime == g_lastMtime) {
 			return;
 		}
 		g_lastSize = size;
 		g_lastMtime = mtime;
-		if (size < g_readOffset) {
-			g_readOffset = 0;  // truncated or rotated
-		}
 
 		std::ifstream in(g_cmdPath, std::ios::binary);
 		if (!in) {
 			return;
 		}
-		in.seekg(static_cast<std::streamoff>(g_readOffset));
-		std::string chunk((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+		const std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+		const auto        start = g_tail.Feed(content);
+		if (start == CommandTail::npos) {
+			return;
+		}
 
-		std::size_t start = 0;
-		for (;;) {
-			const auto nl = chunk.find('\n', start);
+		for (std::size_t pos = start;;) {
+			const auto nl = content.find('\n', pos);
 			if (nl == std::string::npos) {
-				break;  // partial line: leave it for the next poll
+				break;  // partial line: g_tail left it for the next feed
 			}
-			const std::string_view line(chunk.data() + start, nl - start);
+			const std::string_view line(content.data() + pos, nl - pos);
 			const auto             cmd = ParseCommandLine(line);
 			if (cmd.kind != CommandKind::kNone) {
 				if (!cmd.valid) {
@@ -658,8 +755,7 @@ namespace pa::CommandChannel
 					Execute(cmd);
 				}
 			}
-			start = nl + 1;
+			pos = nl + 1;
 		}
-		g_readOffset += start;
 	}
 }

@@ -18,6 +18,7 @@
 #include "Hooks/HookVerifier.h"
 #include "BumpSlot.h"
 #include "CommandParse.h"
+#include "CommandTail.h"
 #include "LiveConfig.h"
 #include "PhysicsMath.h"
 #include "SimGuard.h"
@@ -465,6 +466,19 @@ int main()
 			"pushhere takes dv and mode");
 		Check(!pa::ParseCommandLine("pushhere zzz").valid, "pushhere with garbage is malformed");
 
+		const auto dry = pa::ParseCommandLine("pushdry 0x000A2C94 both");
+		Check(dry.kind == CommandKind::kPushDry && dry.valid && dry.formId == 0x000A2C94 &&
+				dry.mode == pa::PushMode::kBoth && std::fabs(dry.dv - 120.0f) < 1e-3f,
+			"pushdry takes a formID and a mode, with a default dv");
+		Check(pa::ParseCommandLine("pushdry 0x14 rb").mode == pa::PushMode::kRb, "pushdry takes rb");
+		const auto dryDv = pa::ParseCommandLine("pushdry 0x14 250 ctrl");
+		Check(dryDv.mode == pa::PushMode::kCtrl && std::fabs(dryDv.dv - 250.0f) < 1e-3f,
+			"pushdry also accepts an explicit dv");
+		Check(pa::ParseCommandLine("pushdry 0x14").mode == pa::PushMode::kBoth, "pushdry defaults to both");
+		Check(!pa::ParseCommandLine("pushdry").valid, "pushdry without a formID is malformed");
+		Check(!pa::ParseCommandLine("pushdry zzz rb").valid, "pushdry with a bad formID is malformed");
+		Check(!pa::ParseCommandLine("pushdry 0x14 sideways").valid, "pushdry with a bad mode is malformed");
+
 		std::uint32_t id = 0;
 		Check(pa::ParseFormId("0x14", id) && id == 20, "ParseFormId reads hex");
 		Check(pa::ParseFormId("20", id) && id == 20, "ParseFormId reads decimal");
@@ -479,6 +493,37 @@ int main()
 		Check(std::strcmp(pa::PushMechanismName(0), "none") == 0, "PushMechanismName none");
 		Check(std::strcmp(pa::PushMechanismName(3), "both") == 0, "PushMechanismName both");
 		Check(std::strcmp(pa::PushMechanismName(2), "rb") == 0, "PushMechanismName rb");
+	}
+
+	// --- command-file tailer (src/CommandTail.h) ------------------------------
+	// The `watch` command never armed in one run because a byte-offset tailer
+	// skipped the first line of a rewritten command file. These pin the append,
+	// truncate and in-place-rewrite cases.
+	{
+		pa::CommandTail tail;
+		tail.Baseline("");  // the file did not exist when the plugin started
+		Check(tail.Feed("watch 0x000A2C94\n") == 0, "a fresh file is read from offset 0");
+
+		pa::CommandTail appended;
+		appended.Baseline("status\n");
+		Check(appended.Feed("status\nvtables\n") == 7, "an append is read from the old end");
+
+		pa::CommandTail rewritten;
+		rewritten.Baseline("status\nvtables\n");
+		Check(rewritten.Feed("watch 0x000A2C94\ntrace on every 5\n") == 0,
+			"a rewrite larger than the old file is read from 0");
+		Check(rewritten.Feed("aaaa\nbbbb\n") == 0, "a same-size rewrite is read from 0");
+
+		pa::CommandTail partial;
+		partial.Baseline("");
+		Check(partial.Feed("wa") == pa::CommandTail::npos, "a partial line is not a command");
+		Check(partial.Feed("watch 0x1\n") == 0, "the completed line is read");
+		Check(partial.Feed("watch 0x1\n") == pa::CommandTail::npos, "a re-fed identical file is a no-op");
+
+		pa::CommandTail truncated;
+		truncated.Baseline("status\nvtables\n");
+		Check(truncated.Feed("status\n") == pa::CommandTail::npos,
+			"a truncation to a consumed prefix adds nothing");
 	}
 
 	// --- live-config override (src/LiveConfig.h) ------------------------------
