@@ -3,14 +3,23 @@
 // The `push` command's application path.
 //
 // Resolution (actor -> controller -> proxy, and the player -> target direction)
-// happens on the MAIN thread; the request is published into a seqlock slot and
-// consumed on the PHYSICS thread inside PushListener::ProcessConstraintsCallback,
-// where writing a Havok velocity is safe (a 16-byte hkVector4 written from the
-// main thread races the physics step).
+// happens on the MAIN thread when the command is parsed. The request is
+// published into a seqlock slot and consumed by ApplyPendingPushRequest() on the
+// SAME main thread, in ProxyRegistry::MainThreadTick, under the Havok world
+// write lock (world->worldLock).
 //
-// The result of each application is published back to the main thread through a
-// second seqlock slot, so the physics thread never does file I/O or name
-// resolution. `DrainPushResult` is the main-thread consumer.
+// It deliberately does NOT run in PushListener::ProcessConstraintsCallback:
+// that callback runs inside the physics step, in the player character's own
+// solver callback, and a push writes a velocity into a DIFFERENT character's
+// controller / rigid body. Doing that re-entrantly from the solver hung two
+// game sessions (the main thread ended up in a sched_yield spin, no crash log).
+// The engine itself sets character velocities from the main thread, so applying
+// a push there - with the same world lock Precision takes for structural world
+// changes - is the engine's own usage pattern.
+//
+// The result of each application is published back through a second seqlock
+// slot; `DrainPushResult` is the main-thread consumer (the seqlock is kept
+// because it is what makes "consume exactly once" explicit).
 
 #include "CommandParse.h"
 
@@ -76,11 +85,12 @@ namespace pa
 	void PublishPushRequest(const PushRequest& a_request);
 
 	// Any thread. True while a published request has not yet been consumed (or
-	// dropped) by the physics thread. Read by the stall warning.
+	// dropped) by ApplyPendingPushRequest(). Read by the stall warning.
 	[[nodiscard]] bool PushRequestPending();
 
-	// Physics thread (ProcessConstraintsCallback). Consumes at most one request
-	// and writes the resulting velocities; publishes a PushResult.
+	// Main thread (ProxyRegistry::MainThreadTick), holding world->worldLock.
+	// Consumes at most one request and writes the resulting velocities; publishes
+	// a PushResult.
 	void ApplyPendingPushRequest();
 
 	// Main thread. Consume a pending result (if any), fold it into

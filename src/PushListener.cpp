@@ -8,7 +8,6 @@
 #include "LiveConfig.h"
 #include "ProxyAccess.h"
 #include "PushModel.h"
-#include "PushRequest.h"
 #include "WorldContactListener.h"
 
 #include <RE/H/hkpCharacterProxy.h>
@@ -124,13 +123,13 @@ namespace pa
 			return;  // not attached yet: nothing we can vouch for
 		}
 
-		// The `push` command's application path. The request was resolved on the
-		// main thread; the write happens here, inside the physics step, so it does
-		// not race the step. Deliberately before the manifold ABI invariant: an
-		// explicit push does not depend on the manifold, and this is the mechanism
-		// the command channel exists to test.
-		ApplyPendingPushRequest();
-
+		// NOTE: the `push` command is NOT applied here. This callback runs inside
+		// the physics step, in the PLAYER character's solver callback, and a push
+		// writes a velocity into a DIFFERENT character's controller / rigid body.
+		// Doing that re-entrantly from the solver hung two game sessions
+		// (sched_yield spin on the main thread, no crash log). The request is
+		// applied on the main thread under the world write lock instead; see
+		// ProxyRegistry::MainThreadTick.
 		auto& invariant = GetInvariant();
 		if (invariant.Disabled()) {
 			return;

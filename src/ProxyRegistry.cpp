@@ -17,8 +17,11 @@
 
 #include <RE/A/Actor.h>
 #include <RE/A/ActorState.h>
+#include <RE/B/BSAtomic.h>
+#include <RE/B/bhkWorld.h>
 #include <RE/P/ProcessLists.h>
 #include <RE/T/TESRace.h>
+#include <RE/T/TESObjectCELL.h>
 #include <RE/U/UI.h>
 #include <RE/D/DialogueMenu.h>
 #include <RE/H/hkpShapePhantom.h>
@@ -185,6 +188,35 @@ namespace pa
 			a_entry.collidable = (proxy && proxy->shapePhantom) ? proxy->shapePhantom->GetCollidable() : nullptr;
 			a_entry.mass = MassForProxy(proxy, a_actor, a_isPlayer);
 			a_entry.flags = StateFlags(a_actor, a_ctrl, a_isPlayer);
+		}
+
+		// One-shot: a `push` was published but the player had no bhkWorld to lock.
+		std::atomic<bool> g_warnedNoWorldForPush{ false };
+
+		// The `push` application. Resolved on the main thread by the command
+		// channel, applied here - once per frame - under the Havok world write
+		// lock. It used to run in the player's own ProcessConstraintsCallback, i.e.
+		// inside the physics step; writing another character's velocity from there
+		// is re-entrant and hung two sessions. The engine sets character velocities
+		// from the main thread and Precision takes world->worldLock around
+		// structural world changes, so this is the engine's own usage pattern.
+		void ApplyPendingPushToWorld(RE::PlayerCharacter* a_player)
+		{
+			if (!PushRequestPending()) {
+				return;
+			}
+			auto* cell = a_player ? a_player->GetParentCell() : nullptr;
+			RE::NiPointer<RE::bhkWorld> world(cell ? cell->GetbhkWorld() : nullptr);
+			if (!world) {
+				// Nothing safe to lock yet. Hold the request (it stays at-most-once);
+				// a later frame with a live world applies it.
+				if (!g_warnedNoWorldForPush.exchange(true, std::memory_order_relaxed)) {
+					logger::warn("push: request held; the player has no bhkWorld to lock yet");
+				}
+				return;
+			}
+			RE::BSWriteLockGuard lock(world->worldLock);
+			ApplyPendingPushRequest();
 		}
 
 		// One line per stall transition, with the last known state. Gated on the
@@ -412,6 +444,10 @@ namespace pa
 			// performs the initial attach once a player proxy exists, so the message
 			// handler never has to touch the world.
 			PushManagerMainThreadTick();
+			// Apply any pending `push` under the world write lock, on the main thread
+			// (see ApplyPendingPushToWorld for why this is not done in the physics
+			// callback). CommandChannel::Tick() above published it this frame.
+			ApplyPendingPushToWorld(player);
 			PushModel::TickMainThread(static_cast<float>(dtMs) / 1000.0f);
 			EnsurePlayerBodyIdentity();
 			ProbePlayerBumpRecord();

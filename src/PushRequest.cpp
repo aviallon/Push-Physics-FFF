@@ -19,11 +19,14 @@ namespace pa
 {
 	namespace
 	{
-		// Two seqlock slots: main -> physics (request) and physics -> main
-		// (result). Each is a plain value plus an even/odd sequence counter; the
-		// producer writes only while the sequence is odd and the consumer copies
-		// only while it is even. `pending` makes a value consumable exactly once
-		// per publish (latest wins).
+		// Two seqlock slots: the request slot holds the parsed `push` until the
+		// main-thread apply consumes it, and the result slot carries the outcome
+		// back to the command channel. Both ends now run on the main thread; the
+		// slots are kept because `pending` is what makes consumption at-most-once
+		// explicit (and because a future off-thread caller stays correct).
+		// Each is a plain value plus an even/odd sequence counter; the producer
+		// writes only while the sequence is odd and the consumer copies only while
+		// it is even.
 		struct RequestSlot
 		{
 			std::atomic<std::uint32_t> seq{ 0 };
@@ -43,7 +46,7 @@ namespace pa
 
 		PushStatus g_lastPush;  // main thread only
 
-		// Physics thread. Publish a result through the seqlock slot. Kept in one
+		// Main thread. Publish a result through the seqlock slot. Kept in one
 		// place so the refused path and the applied path cannot drift.
 		void PublishResult(const PushResult& a_res)
 		{
