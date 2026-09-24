@@ -62,6 +62,7 @@ namespace pa
 		PushMode      mode = PushMode::kBoth;
 		TraceAction   traceAction = TraceAction::kStatus;
 		std::uint32_t every = 1;
+		bool          hasEvery = false;  // true when `every <n>` was given (kEvery, or `trace on every <n>`)
 	};
 
 	// Strip leading/trailing ASCII whitespace and a trailing '\r' (a CRLF file

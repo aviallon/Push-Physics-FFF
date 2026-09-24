@@ -222,15 +222,30 @@ namespace pa
 			out.kind = CommandKind::kTrace;
 			if (out.arg1.empty() || IEquals(out.arg1, "status")) {
 				out.traceAction = TraceAction::kStatus;
-			} else if (IEquals(out.arg1, "on")) {
-				out.traceAction = TraceAction::kOn;
-			} else if (IEquals(out.arg1, "off")) {
-				out.traceAction = TraceAction::kOff;
+			} else if (IEquals(out.arg1, "on") || IEquals(out.arg1, "off")) {
+				out.traceAction = IEquals(out.arg1, "on") ? TraceAction::kOn : TraceAction::kOff;
+				// Accept the combined form `trace on every <n>` (the shape the README
+				// and the in-game help use). The previous parser read only the first
+				// two tokens and silently ignored the trailing `every <n>`, so a user
+				// who asked for every-5 got every-1 and no diagnostic.
+				if (IEquals(out.arg2, "every")) {
+					if (out.arg3.empty() || !ParseU32Arg(out.arg3, out.every) || out.every == 0) {
+						out.valid = false;
+						out.error = "usage: trace on|off [every <n>] (n >= 1)";
+					} else {
+						out.hasEvery = true;
+					}
+				} else if (!out.arg2.empty()) {
+					out.valid = false;
+					out.error = "usage: trace on|off [every <n>]";
+				}
 			} else if (IEquals(out.arg1, "every")) {
 				out.traceAction = TraceAction::kEvery;
 				if (out.arg2.empty() || !ParseU32Arg(out.arg2, out.every) || out.every == 0) {
 					out.valid = false;
 					out.error = "usage: trace every <n> (n >= 1)";
+				} else {
+					out.hasEvery = true;
 				}
 			} else {
 				out.valid = false;

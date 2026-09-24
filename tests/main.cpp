@@ -440,6 +440,19 @@ int main()
 		Check(!pa::ParseCommandLine("trace every -1").valid, "trace every -1 is rejected");
 		Check(!pa::ParseCommandLine("trace every").valid, "trace every without n is rejected");
 		Check(!pa::ParseCommandLine("trace sideways").valid, "trace with a bad action is rejected");
+		// The combined form the README/help use must actually carry the interval;
+		// it used to parse as a bare `trace on` and silently drop `every 5`.
+		const auto onEvery = pa::ParseCommandLine("trace on every 5");
+		Check(onEvery.valid && onEvery.traceAction == TraceAction::kOn && onEvery.hasEvery && onEvery.every == 5,
+			"trace on every <n> parses and keeps the interval");
+		const auto offEvery = pa::ParseCommandLine("trace off every 12");
+		Check(offEvery.valid && offEvery.traceAction == TraceAction::kOff && offEvery.hasEvery && offEvery.every == 12,
+			"trace off every <n> parses and keeps the interval");
+		Check(pa::ParseCommandLine("trace on").valid && !pa::ParseCommandLine("trace on").hasEvery,
+			"a bare trace on does not claim an interval");
+		Check(!pa::ParseCommandLine("trace on every 0").valid, "trace on every 0 is rejected");
+		Check(!pa::ParseCommandLine("trace on every x").valid, "trace on every with a non-number is rejected");
+		Check(!pa::ParseCommandLine("trace on nonsense").valid, "trace on with trailing nonsense is rejected");
 
 		const auto set = pa::ParseCommandLine("set Physics:fPushScale 2.5");
 		Check(set.kind == CommandKind::kSet && set.valid && set.arg1 == "Physics:fPushScale" && set.arg2 == "2.5",

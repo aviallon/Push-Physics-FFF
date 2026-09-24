@@ -199,7 +199,7 @@ namespace pa::CommandChannel
 				   "actors - ProcessLists high actors with controller ptr, vptr and class\n"
 				   "watch <formID> - record that actor in every trace row\n"
 				   "unwatch - stop watching\n"
-				   "trace on|off|status|every <n> - control PushAside.trace\n"
+				   "trace on|off|status|every <n> - control PushAside.trace (on/off also accept 'every <n>')\n"
 				   "set - list live-settable config keys\n"
 				   "set <Section>:<Key> <value> - change a config value live (General is a wildcard section)\n"
 				   "push <formID> <dv> [ctrl|rb|both] - one explicit push, applied on the\n"
@@ -387,6 +387,11 @@ namespace pa::CommandChannel
 
 		[[nodiscard]] std::string TraceBody(const ParsedCommand& a_cmd)
 		{
+			// `every` is applied whichever verb carried it, so `trace on every 5`
+			// behaves like `trace every 5` followed by `trace on`.
+			if (a_cmd.hasEvery) {
+				TraceChannel::SetEvery(a_cmd.every);
+			}
 			switch (a_cmd.traceAction) {
 			case TraceAction::kOn:
 				// Keep the config key and the module in sync, so `status` reports the
@@ -401,8 +406,6 @@ namespace pa::CommandChannel
 				TraceChannel::SetEnabled(false);
 				break;
 			case TraceAction::kEvery:
-				TraceChannel::SetEvery(a_cmd.every);
-				break;
 			case TraceAction::kStatus:
 				break;
 			}
