@@ -31,11 +31,15 @@ namespace pa
 		kUnknown,   // recognised as "something" but not a command
 	};
 
+	// A bitmask so a mode can select any combination of mechanisms. kBoth is the
+	// legacy ctrl+rb pair; kState is the engine character-state push (the fields
+	// bhkCharacterController::sub_78282 / the game's own `pushactoraway` write).
 	enum class PushMode : std::uint8_t
 	{
 		kCtrl = 1,
 		kRb = 2,
 		kBoth = 3,
+		kState = 4,
 	};
 
 	enum class TraceAction : std::uint8_t
@@ -74,7 +78,8 @@ namespace pa
 	[[nodiscard]] bool ParseU32Arg(std::string_view a_text, std::uint32_t& a_out);
 	[[nodiscard]] bool ParsePushMode(std::string_view a_text, PushMode& a_out);
 	[[nodiscard]] const char* PushModeName(PushMode a_mode);
-	[[nodiscard]] const char* PushMechanismName(int a_mask);  // 0 none, 1 ctrl, 2 rb, 3 both
+	// Bitmask names: 0 none, 1 ctrl, 2 rb, 3 both, 4 state, and the combinations.
+	[[nodiscard]] const char* PushMechanismName(int a_mask);
 
 	// Parse one line. `line` in the result is the trimmed input.
 	[[nodiscard]] ParsedCommand ParseCommandLine(std::string_view a_line);

@@ -26,17 +26,19 @@ namespace pa
 			   "push_rb_to_x,push_rb_to_y,push_rb_to_z,"
 			   "watch_form,watch_x,watch_y,watch_z,"
 			   "watch_ctrl_vx,watch_ctrl_vy,watch_ctrl_vz,"
-			   "watch_rb_vx,watch_rb_vy,watch_rb_vz\n";
+			   "watch_rb_vx,watch_rb_vy,watch_rb_vz,"
+			   "watch_init_vx,watch_init_vy,watch_init_vz,watch_vtime,"
+			   "watch_out_vx,watch_out_vy,watch_out_vz,watch_motion,watch_dynamic\n";
 	}
 
 	const char* TraceLegend()
 	{
-		return "# columns: 51 (frame..watch_rb_vz)\n"
-			   "# push_mode: 0=none 1=ctrl 2=rb 3=both; push_mech: 1=ctrl 2=rb 3=both\n"
-			   "# push_changed: 1 when the mechanism's post-write velocity differed from its before value\n"
-			   "# bump_rb_motion: hkpMotion::MotionType 0=invalid 1=dynamic 2=sphereInertia 3=boxInertia "
-			   "4=keyframed 5=fixed 6=thinBoxInertia 7=character; -1 = no rigid body\n"
-			   "# bump_rb_dynamic: 1 dynamic, 0 keyframed/fixed, -1 unknown\n";
+		return "# columns: 60 (frame..watch_dynamic)\n"
+			   "# push_mode: 0=none 1=ctrl 2=rb 3=both 4=state; push_mech: 1=ctrl 2=rb 4=state\n"
+			   "# push_changed: 1 when a mechanism's post-write value differed from its before value\n"
+			   "# bump_rb_motion,watch_motion: hkpMotion::MotionType 0=invalid 1=dynamic 2=sphereInertia "
+			   "3=boxInertia 4=keyframed 5=fixed 6=thinBoxInertia 7=character; -1 = no rigid body\n"
+			   "# bump_rb_dynamic,watch_dynamic: 1 dynamic, 0 keyframed/fixed, -1 unknown\n";
 	}
 
 	int FormatTraceRow(const TraceSample& s, char* a_out, std::size_t a_size)
@@ -47,7 +49,8 @@ namespace pa
 			"%llX,%08X,%llX,%llX,%llX,%llX,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%.3f,%d,"
 			"%d,%.3f,%d,%d,"
 			"%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,"
-			"%08X,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+			"%08X,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,"
+			"%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d\n",
 			static_cast<unsigned long long>(s.frame), s.ms,
 			P(s.playerProxy), static_cast<double>(s.playerPos[0]), static_cast<double>(s.playerPos[1]), static_cast<double>(s.playerPos[2]),
 			static_cast<double>(s.playerVel[0]), static_cast<double>(s.playerVel[1]), static_cast<double>(s.playerVel[2]),
@@ -64,7 +67,11 @@ namespace pa
 			s.watchForm,
 			static_cast<double>(s.watchPos[0]), static_cast<double>(s.watchPos[1]), static_cast<double>(s.watchPos[2]),
 			static_cast<double>(s.watchCtrlVel[0]), static_cast<double>(s.watchCtrlVel[1]), static_cast<double>(s.watchCtrlVel[2]),
-			static_cast<double>(s.watchRbVel[0]), static_cast<double>(s.watchRbVel[1]), static_cast<double>(s.watchRbVel[2]));
+			static_cast<double>(s.watchRbVel[0]), static_cast<double>(s.watchRbVel[1]), static_cast<double>(s.watchRbVel[2]),
+			static_cast<double>(s.watchInitVel[0]), static_cast<double>(s.watchInitVel[1]), static_cast<double>(s.watchInitVel[2]),
+			static_cast<double>(s.watchVTime),
+			static_cast<double>(s.watchOutVel[0]), static_cast<double>(s.watchOutVel[1]), static_cast<double>(s.watchOutVel[2]),
+			s.watchMotion, s.watchDynamic);
 	}
 
 	int FormatTraceComment(const char* a_text, char* a_out, std::size_t a_size)

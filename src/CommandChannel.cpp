@@ -202,10 +202,12 @@ namespace pa::CommandChannel
 				   "trace on|off|status|every <n> - control PushAside.trace (on/off also accept 'every <n>')\n"
 				   "set - list live-settable config keys\n"
 				   "set <Section>:<Key> <value> - change a config value live (General is a wildcard section)\n"
-				   "push <formID> <dv> [ctrl|rb|both] - one explicit push, applied on the\n"
-				   " main thread under the world lock\n"
-				   "pushhere [dv] [ctrl|rb|both] - push whatever the bump record names\n"
-				   "pushdry <formID> [dv] [ctrl|rb|both] - resolve a target and log what a\n"
+				   "push <formID> <dv> [ctrl|rb|both|state] - one explicit push, applied on the\n"
+				   " main thread under the world lock. 'state' uses the engine character-state\n"
+				   " push fields (the pushactoraway route), re-applied each frame for the\n"
+				   " duration window\n"
+				   "pushhere [dv] [ctrl|rb|both|state] - push whatever the bump record names\n"
+				   "pushdry <formID> [dv] [ctrl|rb|both|state] - resolve a target and log what a\n"
 				   " push would write, without writing anything (runs even while stalled)\n"
 				   "(push/pushhere are refused unless the game is active, focused and the\n"
 				   " physics simulation is stepping; see status -> sim)\n";
@@ -250,6 +252,10 @@ namespace pa::CommandChannel
 				" target=" + HexId(push.targetFormId) + "\n";
 			out += "  ctrl from=" + Vec3Text(push.ctrlFrom) + " to=" + Vec3Text(push.ctrlTo) + "\n";
 			out += "  rb   from=" + Vec3Text(push.rbFrom) + " to=" + Vec3Text(push.rbTo) + "\n";
+			out += "  state active=" + std::to_string(push.stateActive ? 1 : 0) +
+				" applied=" + std::to_string(push.stateApplied ? 1 : 0) +
+				" initialVelocity=" + Vec3Text(push.stateFrom) + " -> " + Vec3Text(push.stateTo) +
+				" velocityTime=" + Num(push.stateVTimeFrom) + " -> " + Num(push.stateVTimeTo) + "\n";
 			out += TraceChannel::StatusLine();
 			return out;
 		}
@@ -546,9 +552,26 @@ namespace pa::CommandChannel
 				const auto v = ToVec3(rb->motion.linearVelocity);
 				const float rbVel[3]{ v.x, v.y, v.z };
 				out += "  rb   velocity=" + Vec3Text(rbVel) + "\n";
+				const auto type = rb->motion.type.get();
+				const bool dynamic = type == RE::hkpMotion::MotionType::kDynamic ||
+					type == RE::hkpMotion::MotionType::kSphereInertia ||
+					type == RE::hkpMotion::MotionType::kBoxInertia ||
+					type == RE::hkpMotion::MotionType::kThinBoxInertia;
+				out += "  rb   motion_type=" + std::to_string(static_cast<int>(type)) +
+					" (" + (dynamic ? "dynamic" : "keyframed/fixed") + ")\n";
 			} else {
 				out += "  rb   velocity=(none: no rigid body)\n";
 			}
+
+			// The engine character-state fields the `state` mode reads/writes. This is
+			// the field probe: a stationary NPC must show these at rest before a push.
+			const auto initV = ToVec3(ctrl->initialVelocity);
+			const auto outV = ToVec3(ctrl->outVelocity);
+			const float initArr[3]{ initV.x, initV.y, initV.z };
+			const float outArr[3]{ outV.x, outV.y, outV.z };
+			out += "  state initialVelocity=" + Vec3Text(initArr) +
+				" velocityTime=" + Num(ctrl->velocityTime) +
+				" outVelocity=" + Vec3Text(outArr) + "\n";
 
 			auto*        playerProxy = PlayerProxy();
 			math::Vec3   dir{};
@@ -572,8 +595,18 @@ namespace pa::CommandChannel
 					" dv=" + Num(a_cmd.dv) + " dir=" + Vec3Text(dirArr) + "\n";
 				const float delta[3]{ dir.x * a_cmd.dv, dir.y * a_cmd.dv, dir.z * a_cmd.dv };
 				out += "  would add delta=" + Vec3Text(delta) +
-					" to " + (a_cmd.mode == PushMode::kCtrl ? std::string("ctrl only") :
-										a_cmd.mode == PushMode::kRb ? std::string("rb only") : std::string("ctrl and rb")) +
+					" to " + [&]() -> std::string {
+						switch (a_cmd.mode) {
+						case PushMode::kCtrl:
+							return "ctrl only";
+						case PushMode::kRb:
+							return "rb only";
+						case PushMode::kState:
+							return "the engine character-state push fields";
+						default:
+							return "ctrl and rb";
+						}
+					}() +
 					"\n";
 			}
 			out += "  (no write performed)\n";
@@ -610,7 +643,11 @@ namespace pa::CommandChannel
 				" from=" + Vec3Text(a_res.ctrlFrom) + " to=" + Vec3Text(a_res.ctrlTo) + "\n";
 			out += "  rb=" + HexPtr(a_res.rb) +
 				" applied=" + std::to_string(a_res.rbApplied ? 1 : 0) +
-				" from=" + Vec3Text(a_res.rbFrom) + " to=" + Vec3Text(a_res.rbTo);
+				" from=" + Vec3Text(a_res.rbFrom) + " to=" + Vec3Text(a_res.rbTo) + "\n";
+			out += "  state applied=" + std::to_string(a_res.stateApplied ? 1 : 0) +
+				" initialVelocity=" + Vec3Text(a_res.stateFrom) + " -> " + Vec3Text(a_res.stateTo) +
+				" velocityTime=" + Num(a_res.stateVTimeFrom) + " -> " + Num(a_res.stateVTimeTo) +
+				" outVelocity=" + Vec3Text(a_res.outFrom) + " -> " + Vec3Text(a_res.outTo);
 			return out;
 		}
 

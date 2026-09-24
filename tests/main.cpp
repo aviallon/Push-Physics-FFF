@@ -466,6 +466,12 @@ int main()
 				std::fabs(push.dv - 250.0f) < 1e-3f && push.mode == pa::PushMode::kRb,
 			"push takes formID, dv and mode");
 		Check(pa::ParseCommandLine("push 0x14 250").mode == pa::PushMode::kBoth, "push defaults to both");
+		Check(pa::ParseCommandLine("push 0x14 250 state").mode == pa::PushMode::kState,
+			"push takes the state mechanism");
+		Check(pa::ParseCommandLine("pushhere state").mode == pa::PushMode::kState,
+			"pushhere takes the state mechanism");
+		Check(pa::ParseCommandLine("pushdry 0x14 state").mode == pa::PushMode::kState,
+			"pushdry takes the state mechanism");
 		Check(!pa::ParseCommandLine("push 0x14").valid, "push without dv is malformed");
 		Check(!pa::ParseCommandLine("push 0x14 250 sideways").valid, "push with a bad mode is malformed");
 		Check(!pa::ParseCommandLine("push zzz 250").valid, "push with a bad formID is malformed");
@@ -503,9 +509,12 @@ int main()
 		Check(std::strcmp(pa::PushModeName(pa::PushMode::kCtrl), "ctrl") == 0, "PushModeName ctrl");
 		Check(std::strcmp(pa::PushModeName(pa::PushMode::kRb), "rb") == 0, "PushModeName rb");
 		Check(std::strcmp(pa::PushModeName(pa::PushMode::kBoth), "both") == 0, "PushModeName both");
+		Check(std::strcmp(pa::PushModeName(pa::PushMode::kState), "state") == 0, "PushModeName state");
 		Check(std::strcmp(pa::PushMechanismName(0), "none") == 0, "PushMechanismName none");
 		Check(std::strcmp(pa::PushMechanismName(3), "both") == 0, "PushMechanismName both");
 		Check(std::strcmp(pa::PushMechanismName(2), "rb") == 0, "PushMechanismName rb");
+		Check(std::strcmp(pa::PushMechanismName(4), "state") == 0, "PushMechanismName state");
+		Check(std::strcmp(pa::PushMechanismName(7), "all") == 0, "PushMechanismName all");
 	}
 
 	// --- command-file tailer (src/CommandTail.h) ------------------------------
@@ -606,10 +615,11 @@ int main()
 
 		const std::string_view header{ pa::TraceHeader() };
 		Check(!header.empty() && header.back() == '\n', "the trace header ends with a newline");
-		Check(countColumns(header.substr(0, header.size() - 1)) == 51, "the trace header has 51 columns");
+		Check(countColumns(header.substr(0, header.size() - 1)) == 60, "the trace header has 60 columns");
 		Check(std::strstr(pa::TraceHeader(), "player_proxy") != nullptr, "the header names the player proxy");
 		Check(std::strstr(pa::TraceHeader(), "push_mech") != nullptr, "the header names the push mechanism");
 		Check(std::strstr(pa::TraceHeader(), "watch_ctrl_vx") != nullptr, "the header names the watched actor");
+		Check(std::strstr(pa::TraceHeader(), "watch_init_vx") != nullptr, "the header names the state push fields");
 		Check(!std::string_view{ pa::TraceLegend() }.empty(), "a legend is available");
 
 		pa::TraceSample sample;
@@ -631,8 +641,8 @@ int main()
 		Check(static_cast<std::size_t>(n) == std::strlen(buffer), "the reported row length matches the text");
 		Check(std::string_view{ buffer, static_cast<std::size_t>(n - 1) }.rfind("12345,", 0) == 0,
 			"the row starts with the frame number");
-		Check(countColumns(std::string_view{ buffer, static_cast<std::size_t>(n - 1) }) == 51,
-			"a trace row has the same 51 columns as the header");
+		Check(countColumns(std::string_view{ buffer, static_cast<std::size_t>(n - 1) }) == 60,
+			"a trace row has the same 60 columns as the header");
 		Check(std::string_view{ buffer }.find("ABCDEF") != std::string_view::npos,
 			"the player proxy pointer is written in hex");
 

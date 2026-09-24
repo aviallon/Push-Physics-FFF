@@ -51,17 +51,27 @@ namespace pa
 		std::uintptr_t rb = 0;
 		PushMode       mode = PushMode::kBoth;
 		float          dv = 0.0f;
-		int            mechanism = 0;  // bitmask: 1 ctrl, 2 rb
+		int            mechanism = 0;  // bitmask: 1 ctrl, 2 rb, 4 state
 		// pa::PushApplyRefusal; 0 (kNone) means the request was evaluated. Set
 		// when a well-formed request was dropped without writing Havok state.
 		int            refusal = 0;
 		bool           ctrlApplied = false;
 		bool           rbApplied = false;
+		bool           stateApplied = false;
 		bool           changed = false;
 		float          ctrlFrom[3]{};
 		float          ctrlTo[3]{};
 		float          rbFrom[3]{};
 		float          rbTo[3]{};
+		// The engine character-state push fields: bhkCharacterController's
+		// initialVelocity (+0xA0) and velocityTime (+0x220), plus outVelocity
+		// (+0x90), the per-frame displacement the state update integrates.
+		float          stateFrom[3]{};
+		float          stateVTimeFrom = 0.0f;
+		float          stateTo[3]{};
+		float          stateVTimeTo = 0.0f;
+		float          outFrom[3]{};
+		float          outTo[3]{};
 		std::uint64_t  frame = 0;
 	};
 
@@ -79,6 +89,14 @@ namespace pa
 		float         rbFrom[3]{};
 		float         rbTo[3]{};
 		std::uint32_t targetFormId = 0;
+		bool          stateApplied = false;
+		bool          stateActive = false;  // a state push is still being re-applied
+		float         stateFrom[3]{};
+		float         stateVTimeFrom = 0.0f;
+		float         stateTo[3]{};
+		float         stateVTimeTo = 0.0f;
+		float         outFrom[3]{};
+		float         outTo[3]{};
 	};
 
 	// Main thread. Latest wins; a request is applied at most once.
@@ -92,6 +110,16 @@ namespace pa
 	// Consumes at most one request and writes the resulting velocities; publishes
 	// a PushResult.
 	void ApplyPendingPushRequest();
+
+	// Any thread. True while a state push is still inside its re-application
+	// window (maxPushDurationMs). Read by the main-thread tick to decide whether
+	// it must take the world lock even with no request pending.
+	[[nodiscard]] bool StatePushActive();
+
+	// Main thread (ProxyRegistry::MainThreadTick), holding world->worldLock.
+	// Re-applies the active state push so it is not erased by the character
+	// update, and zeroes the fields once the window expires.
+	void ReapplyActiveStatePush();
 
 	// Main thread. Consume a pending result (if any), fold it into
 	// LastPushStatus() and hand it back for reporting.

@@ -202,7 +202,9 @@ namespace pa
 		// structural world changes, so this is the engine's own usage pattern.
 		void ApplyPendingPushToWorld(RE::PlayerCharacter* a_player)
 		{
-			if (!PushRequestPending()) {
+			const bool pending = PushRequestPending();
+			const bool stateActive = StatePushActive();
+			if (!pending && !stateActive) {
 				return;
 			}
 			auto* cell = a_player ? a_player->GetParentCell() : nullptr;
@@ -210,13 +212,17 @@ namespace pa
 			if (!world) {
 				// Nothing safe to lock yet. Hold the request (it stays at-most-once);
 				// a later frame with a live world applies it.
-				if (!g_warnedNoWorldForPush.exchange(true, std::memory_order_relaxed)) {
+				if (pending && !g_warnedNoWorldForPush.exchange(true, std::memory_order_relaxed)) {
 					logger::warn("push: request held; the player has no bhkWorld to lock yet");
 				}
 				return;
 			}
 			RE::BSWriteLockGuard lock(world->worldLock);
 			ApplyPendingPushRequest();
+			// The state push is re-applied every frame inside its window so the
+			// character update cannot erase it before the step integrates it, and is
+			// zeroed once the window expires.
+			ReapplyActiveStatePush();
 		}
 
 		// One line per stall transition, with the last known state. Gated on the

@@ -45,6 +45,14 @@ namespace pa
 		float         watchPos[3]{};
 		float         watchCtrlVel[3]{};
 		float         watchRbVel[3]{};
+		// The engine character-state push fields on the watched controller, plus
+		// its rigid body's motion type. These are what the `state` mechanism writes
+		// and what the character update consumes.
+		float         watchInitVel[3]{};  // bhkCharacterController::initialVelocity (+0xA0)
+		float         watchVTime = 0.0f;  // bhkCharacterController::velocityTime (+0x220)
+		float         watchOutVel[3]{};   // bhkCharacterController::outVelocity (+0x90)
+		int           watchMotion = -1;   // hkpMotion::MotionType, -1 = no rigid body
+		int           watchDynamic = -1;  // 1 dynamic, 0 keyframed/fixed, -1 unknown
 	};
 
 	// The CSV column header, including its trailing '\n'. Static storage.

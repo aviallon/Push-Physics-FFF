@@ -2,15 +2,19 @@
 
 #include "PushRequest.h"
 
+#include "Config.h"
 #include "FrameClock.h"
+#include "GameState.h"
 #include "HkMath.h"
 #include "PhysicsMath.h"
 #include "SimGuard.h"
 
+#include <RE/A/Actor.h>
 #include <RE/B/bhkCharacterController.h>
 #include <RE/H/hkpCharacterProxy.h>
 #include <RE/H/hkpMotion.h>
 #include <RE/H/hkpRigidBody.h>
+#include <RE/T/TESForm.h>
 
 #include <atomic>
 #include <cmath>
@@ -45,6 +49,64 @@ namespace pa
 		ResultSlot  g_result;
 
 		PushStatus g_lastPush;  // main thread only
+
+		// ---------------------------------------------------------------- state push
+		//
+		// The engine's own character push. `bhkCharacterController` carries three
+		// fields the on-ground/swimming character-state update consumes:
+		//   outVelocity     +0x90  (the per-frame velocity/displacement accumulator)
+		//   initialVelocity +0xA0  (the push velocity)
+		//   velocityTime    +0x220 (the push duration, seconds)
+		//
+		// `bhkCharacterController::sub_78282` (AE id 78282, RVA 0x1065F50 on
+		// 1.7.104) writes initialVelocity = dirScaled*(1/70)/m and velocityTime = m,
+		// guarded by a "keep the stronger push" norm compare. The game's own
+		// `pushactoraway` reaches it through
+		// papyrus::ObjectReference::PushActorAway -> AIProcess::KnockExplosion
+		// (AE 39895, RVA 0x7237C0), which passes dirScaled = unitVector*6*M and
+		// m = 0.0125*M. Its sibling (RVA 0x1066020) then folds
+		// initialVelocity*velocityTime into outVelocity once per state update.
+		//
+		// This is the mechanism a velocity write cannot reach: SetLinearVelocityImpl
+		// writes the rigid body's motion velocity (+0x230), which the character
+		// update recomputes every step, whereas these fields are ADDITIVE inputs the
+		// update reads after it has recomputed the AI velocity. We write the two
+		// fields directly rather than calling sub_78282 so the re-application below
+		// is unconditional (the engine function keeps the stronger push and would
+		// ignore a repeat). Both the formula and the constant are read off
+		// SkyrimSE.exe 1.7.104
+		// (sha256 846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f).
+		constexpr float kEngineStateInvScale = 0.0142875f;  // engine const 0x1417FDE5C
+
+		// The engine's KnockExplosion mapping from a single magnitude M.
+		constexpr float kStateDirPerMagnitude = 6.0f;      // 600 * (M/100)
+		constexpr float kStateTimePerMagnitude = 0.0125f;  // 1.25 * (M/100)
+
+		struct ActiveStatePush
+		{
+			bool                       active = false;
+			RE::bhkCharacterController* ctrl = nullptr;
+			float                      dir[3]{};  // unit horizontal, player -> target
+			float                      dv = 0.0f;
+			std::uint64_t              endMs = 0;
+			std::uint32_t              formId = 0;
+		};
+
+		ActiveStatePush g_statePush;  // main thread only
+
+		// Apply (or re-apply) the engine character-state push for the active
+		// request. Writes `initialVelocity` (+0xA0) and `velocityTime` (+0x220).
+		void WriteStatePush(RE::bhkCharacterController* a_ctrl, const float a_dir[3], float a_dv)
+		{
+			if (!a_ctrl) {
+				return;
+			}
+			const float M = std::max(1.0f, std::fabs(a_dv));
+			const float m = kStateTimePerMagnitude * M;
+			const float scale = kStateDirPerMagnitude * M * (kEngineStateInvScale / m);
+			a_ctrl->initialVelocity = Hk(a_dir[0] * scale, a_dir[1] * scale, a_dir[2] * scale);
+			a_ctrl->velocityTime = m;
+		}
 
 		// Main thread. Publish a result through the seqlock slot. Kept in one
 		// place so the refused path and the applied path cannot drift.
@@ -156,9 +218,50 @@ namespace pa
 			}
 		}
 
+		// Engine character-state push (mode `state`). The engine's own
+		// pushactoraway route, applied here and then re-applied every frame for
+		// maxPushDurationMs so the character update cannot erase it before the
+		// step integrates it. At most one state push is active at a time; a new
+		// `push ... state` replaces it (latest wins, like the request slot).
+		if ((static_cast<int>(req.mode) & static_cast<int>(PushMode::kState)) && req.ctrl) {
+			const auto outBefore = ToVec3(req.ctrl->outVelocity);
+			const auto initBefore = ToVec3(req.ctrl->initialVelocity);
+			res.stateVTimeFrom = req.ctrl->velocityTime;
+
+			g_statePush.active = true;
+			g_statePush.ctrl = req.ctrl;
+			g_statePush.dir[0] = req.dir[0];
+			g_statePush.dir[1] = req.dir[1];
+			g_statePush.dir[2] = req.dir[2];
+			g_statePush.dv = req.dv;
+			g_statePush.formId = req.targetFormId;
+			g_statePush.endMs = FrameClock::NowMs() +
+				static_cast<std::uint64_t>(std::max(0.0f, Config::Get().maxPushDurationMs));
+			WriteStatePush(req.ctrl, req.dir, req.dv);
+
+			const auto initAfter = ToVec3(req.ctrl->initialVelocity);
+			const auto outAfter = ToVec3(req.ctrl->outVelocity);
+			res.stateFrom[0] = initBefore.x;
+			res.stateFrom[1] = initBefore.y;
+			res.stateFrom[2] = initBefore.z;
+			res.stateTo[0] = initAfter.x;
+			res.stateTo[1] = initAfter.y;
+			res.stateTo[2] = initAfter.z;
+			res.stateVTimeTo = req.ctrl->velocityTime;
+			res.outFrom[0] = outBefore.x;
+			res.outFrom[1] = outBefore.y;
+			res.outFrom[2] = outBefore.z;
+			res.outTo[0] = outAfter.x;
+			res.outTo[1] = outAfter.y;
+			res.outTo[2] = outAfter.z;
+			res.stateApplied = true;
+			res.mechanism |= 4;
+		}
+
 		res.changed =
 			(res.ctrlApplied && VectorChanged(res.ctrlFrom, res.ctrlTo)) ||
-			(res.rbApplied && VectorChanged(res.rbFrom, res.rbTo));
+			(res.rbApplied && VectorChanged(res.rbFrom, res.rbTo)) ||
+			(res.stateApplied && VectorChanged(res.stateFrom, res.stateTo));
 
 		PublishResult(res);
 	}
@@ -196,9 +299,57 @@ namespace pa
 			g_lastPush.ctrlTo[i] = a_out.ctrlTo[i];
 			g_lastPush.rbFrom[i] = a_out.rbFrom[i];
 			g_lastPush.rbTo[i] = a_out.rbTo[i];
+			g_lastPush.stateFrom[i] = a_out.stateFrom[i];
+			g_lastPush.stateTo[i] = a_out.stateTo[i];
+			g_lastPush.outFrom[i] = a_out.outFrom[i];
+			g_lastPush.outTo[i] = a_out.outTo[i];
 		}
 		g_lastPush.targetFormId = a_out.targetFormId;
+		g_lastPush.stateApplied = a_out.stateApplied;
+		g_lastPush.stateActive = g_statePush.active;
+		g_lastPush.stateVTimeFrom = a_out.stateVTimeFrom;
+		g_lastPush.stateVTimeTo = a_out.stateVTimeTo;
 		return true;
+	}
+
+	bool StatePushActive()
+	{
+		return g_statePush.active;
+	}
+
+	void ReapplyActiveStatePush()
+	{
+		if (!g_statePush.active) {
+			return;
+		}
+		// A save load / cell change rebuilds the character controller, so the
+		// pointer captured at publish time can be freed. Re-resolve it from the
+		// actor each frame and stop rather than write through a dangling pointer.
+		auto* ctrl = g_statePush.ctrl;
+		if (g_statePush.formId != 0) {
+			auto* actor = RE::TESForm::LookupByID<RE::Actor>(g_statePush.formId);
+			ctrl = actor ? actor->GetCharController() : nullptr;
+		}
+		// The engine writes land on the AI-updated character state, which only
+		// exists while a game is loaded. Refuse (and drop) otherwise.
+		if (!IsGameActive() || !ctrl) {
+			g_statePush.active = false;
+			g_statePush.ctrl = nullptr;
+			return;
+		}
+		g_statePush.ctrl = ctrl;
+		if (FrameClock::NowMs() >= g_statePush.endMs) {
+			// Expired: zero the fields so the character stops being pushed.
+			ctrl->initialVelocity = Hk(0.0f, 0.0f, 0.0f);
+			ctrl->velocityTime = 0.0f;
+			g_statePush.active = false;
+			g_statePush.ctrl = nullptr;
+			return;
+		}
+		// Still inside the window: re-apply. Calling the engine function again is
+		// safe and idempotent (it keeps the stronger push); it is what prevents a
+		// single write from being erased before the physics step integrates it.
+		WriteStatePush(ctrl, g_statePush.dir, g_statePush.dv);
 	}
 
 	const PushStatus& LastPushStatus()

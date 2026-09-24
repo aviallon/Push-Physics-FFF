@@ -180,7 +180,23 @@ namespace pa::TraceChannel
 				a_sample.watchRbVel[0] = rv.x;
 				a_sample.watchRbVel[1] = rv.y;
 				a_sample.watchRbVel[2] = rv.z;
+				const auto type = rb->motion.type.get();
+				a_sample.watchMotion = static_cast<int>(type);
+				a_sample.watchDynamic = IsDynamicMotion(type) ? 1 : 0;
 			}
+
+			// The engine character-state push fields (bhkCharacterController +0xA0,
+			// +0x220 and +0x90). Read-only; this is what makes the `state` mechanism's
+			// effect (or its erasure) observable per frame.
+			const auto init = ToVec3(ctrl->initialVelocity);
+			a_sample.watchInitVel[0] = init.x;
+			a_sample.watchInitVel[1] = init.y;
+			a_sample.watchInitVel[2] = init.z;
+			a_sample.watchVTime = ctrl->velocityTime;
+			const auto outv = ToVec3(ctrl->outVelocity);
+			a_sample.watchOutVel[0] = outv.x;
+			a_sample.watchOutVel[1] = outv.y;
+			a_sample.watchOutVel[2] = outv.z;
 		}
 
 		void FillSample(TraceSample& s)
