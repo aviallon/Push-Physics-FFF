@@ -3,6 +3,7 @@
 #include "ProxyRegistry.h"
 
 #include "Config.h"
+#include "CharacterStepListener.h"
 #include "CommandChannel.h"
 #include "FrameClock.h"
 #include "GameState.h"
@@ -483,6 +484,10 @@ namespace pa
 					BumpTargetCount(), BumpPushAppliedCount(),
 					contact.collisionAdded, contact.pcActor, contact.pcObject, contact.actorActor, contact.other,
 					contact.bodyPhantom, contact.bodyPhantomPlayer, contact.pcGroup, contact.nullVsActor);
+				const auto step = GetCharacterStepListener().Read();
+				logger::info("step-listener: armed={} calls={} forwards={} writes={} last_write_ms={} body=0x{:X} prev=0x{:X}",
+					step.armed ? 1 : 0, step.callbacks, step.forwards, step.writes, step.lastWriteMs,
+					static_cast<unsigned long long>(step.body), static_cast<unsigned long long>(step.prev));
 			}
 		}
 	}

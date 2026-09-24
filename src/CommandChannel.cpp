@@ -3,6 +3,7 @@
 #include "CommandChannel.h"
 
 #include "CommandParse.h"
+#include "CharacterStepListener.h"
 #include "CommandTail.h"
 #include "Config.h"
 #include "FrameClock.h"
@@ -202,12 +203,14 @@ namespace pa::CommandChannel
 				   "trace on|off|status|every <n> - control PushAside.trace (on/off also accept 'every <n>')\n"
 				   "set - list live-settable config keys\n"
 				   "set <Section>:<Key> <value> - change a config value live (General is a wildcard section)\n"
-				   "push <formID> <dv> [ctrl|rb|both|state|knock] - one explicit push, applied on the\n"
+				   "push <formID> <dv> [ctrl|rb|both|state|knock|steplisten] - one explicit push, applied on the\n"
 				   " main thread under the world lock. 'state' uses the engine character-state\n"
 				   " push fields (re-applied for the duration window); 'knock' uses the engine's\n"
-				   " own AIProcess::KnockExplosion (the pushactoraway route for a standing actor)\n"
-				   "pushhere [dv] [ctrl|rb|both|state|knock] - push whatever the bump record names\n"
-				   "pushdry <formID> [dv] [ctrl|rb|both|state|knock] - resolve a target and log what a\n"
+				   " own AIProcess::KnockExplosion (the pushactoraway route for a standing actor);\n"
+				   " 'steplisten' chains a listener onto the target's hkpCharacterRigidBody and\n"
+				   " writes the per-frame velocity from its post-simulation CharacterCallback\n"
+				   "pushhere [dv] [ctrl|rb|both|state|knock|steplisten] - push whatever the bump record names\n"
+				   "pushdry <formID> [dv] [ctrl|rb|both|state|knock|steplisten] - resolve a target and log what a\n"
 				   " push would write, without writing anything (runs even while stalled)\n"
 				   "(push/pushhere are refused unless the game is active, focused and the\n"
 				   " physics simulation is stepping; see status -> sim)\n";
@@ -258,6 +261,21 @@ namespace pa::CommandChannel
 				" velocityTime=" + Num(push.stateVTimeFrom) + " -> " + Num(push.stateVTimeTo) + "\n";
 			out += "  knock applied=" + std::to_string(push.knockApplied ? 1 : 0) +
 				" from=" + Vec3Text(push.knockOrigin) + " magnitude=" + Num(push.knockMag) + "\n";
+			{
+				const auto step = GetCharacterStepListener().Read();
+				out += "  steplisten armed=" + std::to_string(step.armed ? 1 : 0) +
+					" attached=" + std::to_string(step.body != 0 ? 1 : 0) +
+					" applied=" + std::to_string(push.stepListenApplied ? 1 : 0) +
+					" body=" + HexPtr(step.body) +
+					" prev=" + HexPtr(step.prev) + "\n";
+				out += "    calls=" + std::to_string(step.callbacks) +
+					" forwards=" + std::to_string(step.forwards) +
+					" writes=" + std::to_string(step.writes) +
+					" outBefore=" + Vec3Text(step.lastOutBefore) +
+					" outAfter=" + Vec3Text(step.lastOutAfter) +
+					" rbVel=" + Vec3Text(step.lastRbVel) +
+					" accel=" + Vec3Text(step.lastAccel) + "\n";
+			}
 			out += TraceChannel::StatusLine();
 			return out;
 		}
@@ -543,6 +561,11 @@ namespace pa::CommandChannel
 				" playerProxy=" + HexPtr(reinterpret_cast<std::uintptr_t>(PlayerProxy())) + "\n";
 			out += "  ctrl=" + HexPtr(reinterpret_cast<std::uintptr_t>(ctrl)) +
 				" rb=" + HexPtr(reinterpret_cast<std::uintptr_t>(rb)) + "\n";
+			if (auto* rbc = AsRigidBodyController(ctrl)) {
+				auto* stepBody = CharacterRigidBodyFor(rbc);
+				out += "  rigid-body controller: charRigidBody=" + HexPtr(reinterpret_cast<std::uintptr_t>(stepBody)) +
+					" listener=" + HexPtr(reinterpret_cast<std::uintptr_t>(stepBody ? stepBody->listener : nullptr)) + "\n";
+			}
 
 			float ctrlVel[3]{};
 			RE::hkVector4 ctrlHk{};
@@ -610,6 +633,8 @@ namespace pa::CommandChannel
 							return "the engine character-state push fields";
 						case PushMode::kKnock:
 							return "an AIProcess::KnockExplosion knockback";
+						case PushMode::kStepListen:
+							return "the character hkpCharacterRigidBody listener (post-simulation per-frame velocity)";
 						default:
 							return "ctrl and rb";
 						}
@@ -657,6 +682,8 @@ namespace pa::CommandChannel
 				" outVelocity=" + Vec3Text(a_res.outFrom) + " -> " + Vec3Text(a_res.outTo) + "\n";
 			out += "  knock applied=" + std::to_string(a_res.knockApplied ? 1 : 0) +
 				" from=" + Vec3Text(a_res.knockOrigin) + " magnitude=" + Num(a_res.knockMag);
+			out += "\n  steplisten applied=" + std::to_string(a_res.stepListenApplied ? 1 : 0) +
+				" body=" + HexPtr(a_res.stepListenBody) + " prev=" + HexPtr(a_res.stepListenPrev);
 			return out;
 		}
 

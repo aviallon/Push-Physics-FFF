@@ -470,6 +470,12 @@ int main()
 			"push takes the state mechanism");
 		Check(pa::ParseCommandLine("push 0x14 250 knock").mode == pa::PushMode::kKnock,
 			"push takes the knock mechanism");
+		Check(pa::ParseCommandLine("push 0x14 250 steplisten").mode == pa::PushMode::kStepListen,
+			"push takes the steplisten mechanism");
+		Check(pa::ParseCommandLine("pushhere steplisten").mode == pa::PushMode::kStepListen,
+			"pushhere takes the steplisten mechanism");
+		Check(pa::ParseCommandLine("pushdry 0x14 steplisten").mode == pa::PushMode::kStepListen,
+			"pushdry takes the steplisten mechanism");
 		Check(pa::ParseCommandLine("pushhere state").mode == pa::PushMode::kState,
 			"pushhere takes the state mechanism");
 		Check(pa::ParseCommandLine("pushdry 0x14 state").mode == pa::PushMode::kState,
@@ -513,11 +519,13 @@ int main()
 		Check(std::strcmp(pa::PushModeName(pa::PushMode::kBoth), "both") == 0, "PushModeName both");
 		Check(std::strcmp(pa::PushModeName(pa::PushMode::kState), "state") == 0, "PushModeName state");
 		Check(std::strcmp(pa::PushModeName(pa::PushMode::kKnock), "knock") == 0, "PushModeName knock");
+		Check(std::strcmp(pa::PushModeName(pa::PushMode::kStepListen), "steplisten") == 0, "PushModeName steplisten");
 		Check(std::strcmp(pa::PushMechanismName(0), "none") == 0, "PushMechanismName none");
 		Check(std::strcmp(pa::PushMechanismName(3), "both") == 0, "PushMechanismName both");
 		Check(std::strcmp(pa::PushMechanismName(2), "rb") == 0, "PushMechanismName rb");
 		Check(std::strcmp(pa::PushMechanismName(4), "state") == 0, "PushMechanismName state");
 		Check(std::strcmp(pa::PushMechanismName(8), "knock") == 0, "PushMechanismName knock");
+		Check(std::strcmp(pa::PushMechanismName(16), "steplisten") == 0, "PushMechanismName steplisten");
 		Check(std::strcmp(pa::PushMechanismName(7), "ctrl+rb+state") == 0, "PushMechanismName ctrl+rb+state");
 	}
 

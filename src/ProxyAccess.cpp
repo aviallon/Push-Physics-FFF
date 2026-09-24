@@ -47,6 +47,39 @@ namespace pa
 		return static_cast<RE::bhkCharProxyController*>(a_ctrl);
 	}
 
+	RE::bhkCharRigidBodyController* AsRigidBodyController(RE::bhkCharacterController* a_ctrl)
+	{
+		if (!a_ctrl) {
+			return nullptr;
+		}
+		// The controller subobject is the primary base (bhkCharacterController at
+		// offset 0), whose vtable is VTABLE_bhkCharRigidBodyController[0] (AE
+		// 240580); the chained hkpCharacterRigidBodyListener lives at +0x330 and is
+		// [1] (AE 240583). Read off the engine's bhkCharRigidBodyController vtable
+		// pair (RVA 0x1A89BF0 controller / 0x1A89C98 listener).
+		static REL::Relocation<std::uintptr_t> kControllerVtable{ RE::VTABLE_bhkCharRigidBodyController[0] };
+		const auto                             expected = kControllerVtable.address();
+		if (!VtableResolved(expected, "bhkCharRigidBodyController[0]")) {
+			return nullptr;
+		}
+		if (*reinterpret_cast<const void* const*>(a_ctrl) !=
+			reinterpret_cast<const void*>(expected)) {
+			return nullptr;
+		}
+		return static_cast<RE::bhkCharRigidBodyController*>(a_ctrl);
+	}
+
+	RE::hkpCharacterRigidBody* CharacterRigidBodyFor(RE::bhkCharRigidBodyController* a_ctrl)
+	{
+		if (!a_ctrl) {
+			return nullptr;
+		}
+		// bhkCharacterRigidBody::referencedObject is the hkpCharacterRigidBody; the
+		// engine's own getter (RVA 0x109AA00) reads controller+0x350 and returns
+		// [that + 0x20] (the hkpRigidBody), which pins this layout.
+		return static_cast<RE::hkpCharacterRigidBody*>(a_ctrl->charRigidBody.referencedObject.get());
+	}
+
 	RE::bhkCharProxyController* PlayerController()
 	{
 		auto* player = RE::PlayerCharacter::GetSingleton();

@@ -43,6 +43,9 @@ namespace pa
 		// The engine's own standing-actor knockback: AIProcess::KnockExplosion, the
 		// path papyrus::ObjectReference::PushActorAway takes for a non-ragdoll actor.
 		kKnock = 8,
+		// Chain a listener onto the target's own hkpCharacterRigidBody and write the
+		// per-frame velocity from its CharacterCallback (post-simulation phase).
+		kStepListen = 16,
 	};
 
 	enum class TraceAction : std::uint8_t

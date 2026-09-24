@@ -62,6 +62,9 @@ namespace pa
 		bool           knockApplied = false;
 		float          knockOrigin[3]{};
 		float          knockMag = 0.0f;
+		bool           stepListenApplied = false;
+		std::uintptr_t stepListenBody = 0;
+		std::uintptr_t stepListenPrev = 0;
 		bool           changed = false;
 		float          ctrlFrom[3]{};
 		float          ctrlTo[3]{};
@@ -98,6 +101,9 @@ namespace pa
 		bool          knockApplied = false;
 		float         knockOrigin[3]{};
 		float         knockMag = 0.0f;
+		bool          stepListenApplied = false;
+		std::uintptr_t stepListenBody = 0;
+		std::uintptr_t stepListenPrev = 0;
 		float         stateFrom[3]{};
 		float         stateVTimeFrom = 0.0f;
 		float         stateTo[3]{};
@@ -122,6 +128,12 @@ namespace pa
 	// window (maxPushDurationMs). Read by the main-thread tick to decide whether
 	// it must take the world lock even with no request pending.
 	[[nodiscard]] bool StatePushActive();
+
+	// Any thread. True while the character-step listener push is inside its
+	// window. Unlike the state push it is self-driving: once armed (under the
+	// world lock) the listener applies the velocity from its own callback every
+	// step, so the main thread does not re-apply it.
+	[[nodiscard]] bool StepListenActive();
 
 	// Main thread (ProxyRegistry::MainThreadTick), holding world->worldLock.
 	// Re-applies the active state push so it is not erased by the character

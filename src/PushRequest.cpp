@@ -2,11 +2,13 @@
 
 #include "PushRequest.h"
 
+#include "CharacterStepListener.h"
 #include "Config.h"
 #include "FrameClock.h"
 #include "GameState.h"
 #include "HkMath.h"
 #include "PhysicsMath.h"
+#include "ProxyAccess.h"
 #include "SimGuard.h"
 
 #include <RE/A/AIProcess.h>
@@ -260,10 +262,35 @@ namespace pa
 			res.mechanism |= 4;
 		}
 
+		// Character-step listener push (mode `steplisten`): chain our listener onto
+		// the target's own hkpCharacterRigidBody and let its CharacterCallback write
+		// the engine's per-frame velocity (hkpCharacterRigidBody::SetLinearVelocity)
+		// at the post-simulation phase, once per step, for the duration window. It is
+		// self-driving: the callback applies it every step, so there is nothing to
+		// re-apply from the main thread. Attaching here is safe because this runs
+		// under the Havok world write lock, the same lock the step holds.
+		if ((static_cast<int>(req.mode) & static_cast<int>(PushMode::kStepListen)) && req.ctrl) {
+			auto* rbc = AsRigidBodyController(req.ctrl);
+			auto* stepBody = CharacterRigidBodyFor(rbc);
+			if (stepBody) {
+				auto& listener = GetCharacterStepListener();
+				if (listener.Attach(stepBody, req.ctrl)) {
+					const auto endMs = FrameClock::NowMs() +
+						static_cast<std::uint64_t>(std::max(0.0f, Config::Get().maxPushDurationMs));
+					listener.Arm(stepBody, req.dir, req.dv, req.targetFormId, endMs);
+					res.stepListenApplied = true;
+					res.stepListenBody = reinterpret_cast<std::uintptr_t>(stepBody);
+					res.stepListenPrev = listener.Read().prev;
+					res.mechanism |= 16;
+				}
+			}
+		}
+
 		res.changed =
 			(res.ctrlApplied && VectorChanged(res.ctrlFrom, res.ctrlTo)) ||
 			(res.rbApplied && VectorChanged(res.rbFrom, res.rbTo)) ||
-			(res.stateApplied && VectorChanged(res.stateFrom, res.stateTo));
+			(res.stateApplied && VectorChanged(res.stateFrom, res.stateTo)) ||
+			res.stepListenApplied;
 
 		// Engine knockback (mode `knock`): AIProcess::KnockExplosion, the path the
 		// game's own pushactoraway takes for a standing (non-ragdoll) actor. It is
@@ -333,6 +360,9 @@ namespace pa
 		g_lastPush.stateVTimeTo = a_out.stateVTimeTo;
 		g_lastPush.knockApplied = a_out.knockApplied;
 		g_lastPush.knockMag = a_out.knockMag;
+		g_lastPush.stepListenApplied = a_out.stepListenApplied;
+		g_lastPush.stepListenBody = a_out.stepListenBody;
+		g_lastPush.stepListenPrev = a_out.stepListenPrev;
 		for (int i = 0; i < 3; ++i) {
 			g_lastPush.knockOrigin[i] = a_out.knockOrigin[i];
 		}
@@ -342,6 +372,11 @@ namespace pa
 	bool StatePushActive()
 	{
 		return g_statePush.active;
+	}
+
+	bool StepListenActive()
+	{
+		return GetCharacterStepListener().Armed();
 	}
 
 	void ReapplyActiveStatePush()

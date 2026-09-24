@@ -154,6 +154,10 @@ namespace pa
 			a_out = PushMode::kKnock;
 			return true;
 		}
+		if (IEquals(a_text, "steplisten")) {
+			a_out = PushMode::kStepListen;
+			return true;
+		}
 		return false;
 	}
 
@@ -170,12 +174,17 @@ namespace pa
 			return "state";
 		case PushMode::kKnock:
 			return "knock";
+		case PushMode::kStepListen:
+			return "steplisten";
 		}
 		return "both";
 	}
 
 	const char* PushMechanismName(int a_mask)
 	{
+		if (a_mask & 16) {
+			return "steplisten";
+		}
 		switch (a_mask & 0xF) {
 		case 1:
 			return "ctrl";
@@ -290,7 +299,7 @@ namespace pa
 			out.kind = CommandKind::kPush;
 			if (out.arg1.empty() || out.arg2.empty()) {
 				out.valid = false;
-				out.error = "usage: push <formID> <dv> [ctrl|rb|both|state|knock]";
+				out.error = "usage: push <formID> <dv> [ctrl|rb|both|state|knock|steplisten]";
 			} else if (!ParseFormId(out.arg1, out.formId)) {
 				out.valid = false;
 				out.error = "push: formID must be hex (0x...) or decimal";
@@ -319,7 +328,7 @@ namespace pa
 					out.mode = mode;
 				} else {
 					out.valid = false;
-					out.error = "usage: pushhere [dv] [ctrl|rb|both|state|knock]";
+					out.error = "usage: pushhere [dv] [ctrl|rb|both|state|knock|steplisten]";
 					break;
 				}
 			}
@@ -347,7 +356,7 @@ namespace pa
 						out.mode = mode;
 					} else {
 						out.valid = false;
-						out.error = "usage: pushdry <formID> [dv] [ctrl|rb|both|state|knock]";
+						out.error = "usage: pushdry <formID> [dv] [ctrl|rb|both|state|knock|steplisten]";
 						break;
 					}
 				}
