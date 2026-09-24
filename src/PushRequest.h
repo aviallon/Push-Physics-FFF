@@ -37,7 +37,8 @@ namespace pa
 	{
 		RE::hkpCharacterProxy*      target = nullptr;
 		RE::bhkCharacterController* ctrl = nullptr;
-		float                       dir[3]{};  // unit horizontal, player -> target
+		float                       dir[3]{};     // unit horizontal, player -> target
+		float                       origin[3]{};  // the pusher (player) position
 		float                       dv = 0.0f;
 		PushMode                    mode = PushMode::kBoth;
 		std::uint32_t               targetFormId = 0;
@@ -58,6 +59,9 @@ namespace pa
 		bool           ctrlApplied = false;
 		bool           rbApplied = false;
 		bool           stateApplied = false;
+		bool           knockApplied = false;
+		float          knockOrigin[3]{};
+		float          knockMag = 0.0f;
 		bool           changed = false;
 		float          ctrlFrom[3]{};
 		float          ctrlTo[3]{};
@@ -91,6 +95,9 @@ namespace pa
 		std::uint32_t targetFormId = 0;
 		bool          stateApplied = false;
 		bool          stateActive = false;  // a state push is still being re-applied
+		bool          knockApplied = false;
+		float         knockOrigin[3]{};
+		float         knockMag = 0.0f;
 		float         stateFrom[3]{};
 		float         stateVTimeFrom = 0.0f;
 		float         stateTo[3]{};

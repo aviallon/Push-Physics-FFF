@@ -9,11 +9,13 @@
 #include "PhysicsMath.h"
 #include "SimGuard.h"
 
+#include <RE/A/AIProcess.h>
 #include <RE/A/Actor.h>
 #include <RE/B/bhkCharacterController.h>
 #include <RE/H/hkpCharacterProxy.h>
 #include <RE/H/hkpMotion.h>
 #include <RE/H/hkpRigidBody.h>
+#include <RE/N/NiPoint3.h>
 #include <RE/T/TESForm.h>
 
 #include <atomic>
@@ -263,6 +265,26 @@ namespace pa
 			(res.rbApplied && VectorChanged(res.rbFrom, res.rbTo)) ||
 			(res.stateApplied && VectorChanged(res.stateFrom, res.stateTo));
 
+		// Engine knockback (mode `knock`): AIProcess::KnockExplosion, the path the
+		// game's own pushactoraway takes for a standing (non-ragdoll) actor. It is
+		// a one-shot event the AI reacts to, so there is nothing to re-apply.
+		// Resolve the actor from the formID rather than trusting a stale pointer.
+		if ((static_cast<int>(req.mode) & static_cast<int>(PushMode::kKnock)) && req.targetFormId != 0) {
+			auto* actor = RE::TESForm::LookupByID<RE::Actor>(req.targetFormId);
+			auto* proc = actor ? actor->GetActorRuntimeData().currentProcess : nullptr;
+			if (actor && proc) {
+				const RE::NiPoint3 location{ req.origin[0], req.origin[1], req.origin[2] };
+				proc->KnockExplosion(actor, location, req.dv);
+				res.knockApplied = true;
+				res.knockMag = req.dv;
+				res.knockOrigin[0] = req.origin[0];
+				res.knockOrigin[1] = req.origin[1];
+				res.knockOrigin[2] = req.origin[2];
+				res.mechanism |= 8;
+				res.changed = true;
+			}
+		}
+
 		PublishResult(res);
 	}
 
@@ -309,6 +331,11 @@ namespace pa
 		g_lastPush.stateActive = g_statePush.active;
 		g_lastPush.stateVTimeFrom = a_out.stateVTimeFrom;
 		g_lastPush.stateVTimeTo = a_out.stateVTimeTo;
+		g_lastPush.knockApplied = a_out.knockApplied;
+		g_lastPush.knockMag = a_out.knockMag;
+		for (int i = 0; i < 3; ++i) {
+			g_lastPush.knockOrigin[i] = a_out.knockOrigin[i];
+		}
 		return true;
 	}
 

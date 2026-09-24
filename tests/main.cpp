@@ -468,6 +468,8 @@ int main()
 		Check(pa::ParseCommandLine("push 0x14 250").mode == pa::PushMode::kBoth, "push defaults to both");
 		Check(pa::ParseCommandLine("push 0x14 250 state").mode == pa::PushMode::kState,
 			"push takes the state mechanism");
+		Check(pa::ParseCommandLine("push 0x14 250 knock").mode == pa::PushMode::kKnock,
+			"push takes the knock mechanism");
 		Check(pa::ParseCommandLine("pushhere state").mode == pa::PushMode::kState,
 			"pushhere takes the state mechanism");
 		Check(pa::ParseCommandLine("pushdry 0x14 state").mode == pa::PushMode::kState,
@@ -510,11 +512,13 @@ int main()
 		Check(std::strcmp(pa::PushModeName(pa::PushMode::kRb), "rb") == 0, "PushModeName rb");
 		Check(std::strcmp(pa::PushModeName(pa::PushMode::kBoth), "both") == 0, "PushModeName both");
 		Check(std::strcmp(pa::PushModeName(pa::PushMode::kState), "state") == 0, "PushModeName state");
+		Check(std::strcmp(pa::PushModeName(pa::PushMode::kKnock), "knock") == 0, "PushModeName knock");
 		Check(std::strcmp(pa::PushMechanismName(0), "none") == 0, "PushMechanismName none");
 		Check(std::strcmp(pa::PushMechanismName(3), "both") == 0, "PushMechanismName both");
 		Check(std::strcmp(pa::PushMechanismName(2), "rb") == 0, "PushMechanismName rb");
 		Check(std::strcmp(pa::PushMechanismName(4), "state") == 0, "PushMechanismName state");
-		Check(std::strcmp(pa::PushMechanismName(7), "all") == 0, "PushMechanismName all");
+		Check(std::strcmp(pa::PushMechanismName(8), "knock") == 0, "PushMechanismName knock");
+		Check(std::strcmp(pa::PushMechanismName(7), "ctrl+rb+state") == 0, "PushMechanismName ctrl+rb+state");
 	}
 
 	// --- command-file tailer (src/CommandTail.h) ------------------------------

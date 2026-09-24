@@ -150,6 +150,10 @@ namespace pa
 			a_out = PushMode::kState;
 			return true;
 		}
+		if (IEquals(a_text, "knock")) {
+			a_out = PushMode::kKnock;
+			return true;
+		}
 		return false;
 	}
 
@@ -164,13 +168,15 @@ namespace pa
 			return "both";
 		case PushMode::kState:
 			return "state";
+		case PushMode::kKnock:
+			return "knock";
 		}
 		return "both";
 	}
 
 	const char* PushMechanismName(int a_mask)
 	{
-		switch (a_mask & 0x7) {
+		switch (a_mask & 0xF) {
 		case 1:
 			return "ctrl";
 		case 2:
@@ -184,6 +190,12 @@ namespace pa
 		case 6:
 			return "rb+state";
 		case 7:
+			return "ctrl+rb+state";
+		case 8:
+			return "knock";
+		case 12:
+			return "state+knock";
+		case 15:
 			return "all";
 		default:
 			return "none";
@@ -278,7 +290,7 @@ namespace pa
 			out.kind = CommandKind::kPush;
 			if (out.arg1.empty() || out.arg2.empty()) {
 				out.valid = false;
-				out.error = "usage: push <formID> <dv> [ctrl|rb|both|state]";
+				out.error = "usage: push <formID> <dv> [ctrl|rb|both|state|knock]";
 			} else if (!ParseFormId(out.arg1, out.formId)) {
 				out.valid = false;
 				out.error = "push: formID must be hex (0x...) or decimal";
@@ -287,7 +299,7 @@ namespace pa
 				out.error = "push: dv must be a number (units/s)";
 			} else if (!out.arg3.empty() && !ParsePushMode(out.arg3, out.mode)) {
 				out.valid = false;
-				out.error = "push: mode must be ctrl, rb, both or state";
+				out.error = "push: mode must be ctrl, rb, both, state or knock";
 			}
 		} else if (IEquals(word, "pushhere")) {
 			out.kind = CommandKind::kPushHere;
@@ -307,7 +319,7 @@ namespace pa
 					out.mode = mode;
 				} else {
 					out.valid = false;
-					out.error = "usage: pushhere [dv] [ctrl|rb|both|state]";
+					out.error = "usage: pushhere [dv] [ctrl|rb|both|state|knock]";
 					break;
 				}
 			}
@@ -335,7 +347,7 @@ namespace pa
 						out.mode = mode;
 					} else {
 						out.valid = false;
-						out.error = "usage: pushdry <formID> [dv] [ctrl|rb|both|state]";
+						out.error = "usage: pushdry <formID> [dv] [ctrl|rb|both|state|knock]";
 						break;
 					}
 				}

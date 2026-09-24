@@ -40,6 +40,9 @@ namespace pa
 		kRb = 2,
 		kBoth = 3,
 		kState = 4,
+		// The engine's own standing-actor knockback: AIProcess::KnockExplosion, the
+		// path papyrus::ObjectReference::PushActorAway takes for a non-ragdoll actor.
+		kKnock = 8,
 	};
 
 	enum class TraceAction : std::uint8_t
